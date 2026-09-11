@@ -20,7 +20,9 @@ siliconmind = siliconmind_raw.map(
 
 smoltalk_raw = load_dataset(str(SMOLTALK_DATASET_PATH), split="train")
 smoltalk = smoltalk_raw.map(
-    lambda row, index: convert_smoltalk_sample(row, index=index, category="smoltalk"),
+    lambda row, index: convert_smoltalk_sample(
+        row, index=index, category="conversations"
+    ),
     with_indices=True,
     remove_columns=smoltalk_raw.column_names,
 )
