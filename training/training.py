@@ -196,11 +196,22 @@ def build_training_config(args: argparse.Namespace):
         model_init_kwargs={
             "dtype": {"bf16": "bfloat16", "fp16": "float16", "fp32": "float32"}[args.dtype],
             "attn_implementation": args.attn_implementation,
-            "use_cache": False,
             "device_map": None,  # Let Trainer place the model; never inference-style auto sharding.
             "local_files_only": args.local_files_only,
         },
     )
+
+
+def disable_training_cache(model) -> None:
+    """Disable KV caching on the loaded model's text config before training.
+
+    Qwen3.5 stores use_cache in text_config, while text-only models may store
+    it directly in config. get_text_config() handles both layouts. Do not pass
+    use_cache through model_init_kwargs: composite configs can forward it to
+    a constructor that does not accept it. This runtime setting is independent
+    of whether gradient checkpointing is enabled.
+    """
+    model.config.get_text_config().use_cache = False
 
 
 def check_output_directory(args: argparse.Namespace) -> None:
@@ -273,6 +284,7 @@ def main(argv: list[str] | None = None) -> None:
         train_dataset=dataset,
         args=config,
     )
+    disable_training_cache(trainer.model)
     if not len(trainer.train_dataset):
         raise ValueError("No trainable samples remain after truncation; increase --max-length.")
     if trainer.is_world_process_zero():

@@ -189,6 +189,54 @@ def test_invalid_cli_values_are_rejected(option, value):
         training.parse_args([option, value])
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_disable_training_cache_targets_text_config(nested):
+    from types import SimpleNamespace
+    from transformers import GPT2Config, Qwen3_5Config
+
+    config = Qwen3_5Config() if nested else GPT2Config()
+    assert config.get_text_config().use_cache is True
+    training.disable_training_cache(SimpleNamespace(config=config))
+    assert config.get_text_config().use_cache is False
+    if nested:
+        assert not hasattr(config, "use_cache")  # Do not invent a top-level setting.
+
+
+@pytest.mark.parametrize("checkpointing", [True, False])
+def test_qwen35_loads_with_training_kwargs_without_constructor_cache_arg(tmp_path, monkeypatch, checkpointing):
+    """Exercise real TRL/Transformers loading on a tiny local Qwen3.5 checkpoint."""
+    from types import SimpleNamespace
+    import transformers
+    import trl
+    from trl.trainer.utils import create_model_from_path
+
+    config = transformers.Qwen3_5Config(
+        text_config={
+            "vocab_size": 32, "hidden_size": 16, "intermediate_size": 32,
+            "num_hidden_layers": 1, "num_attention_heads": 2, "num_key_value_heads": 1,
+            "head_dim": 8, "layer_types": ["full_attention"],
+        },
+        vision_config={
+            "depth": 1, "hidden_size": 16, "intermediate_size": 32, "num_heads": 2,
+            "out_hidden_size": 16, "num_position_embeddings": 16,
+        },
+    )
+    transformers.Qwen3_5ForConditionalGeneration(config).save_pretrained(tmp_path)
+    monkeypatch.setattr(trl, "SFTConfig", lambda **kwargs: SimpleNamespace(**kwargs))
+    args = training.parse_args([
+        "--dtype", "fp32", "--local-files-only",
+        "--gradient-checkpointing" if checkpointing else "--no-gradient-checkpointing",
+    ])
+    settings = training.build_training_config(args)
+    # No loader mocking: the previous use_cache kwarg must fail here.
+    model = create_model_from_path(str(tmp_path), **settings.model_init_kwargs)
+    assert "use_cache" not in settings.model_init_kwargs
+    assert settings.gradient_checkpointing is checkpointing
+    training.disable_training_cache(model)
+    assert model.config.text_config.use_cache is False
+    assert model.model.language_model.config.use_cache is False
+
+
 def test_nonempty_output_requires_explicit_resume(tmp_path):
     args = training.parse_args(["--output-dir", str(tmp_path)])
     (tmp_path / "existing.txt").write_text("do not overwrite")
@@ -304,7 +352,7 @@ def test_one_cpu_training_step_and_save(sample, tokenizer, tmp_path, monkeypatch
     model = transformers.GPT2LMHeadModel(transformers.GPT2Config(
         vocab_size=len(tokenizer), n_positions=256, n_embd=16, n_layer=1, n_head=2,
         bos_token_id=tokenizer.eos_token_id, eos_token_id=tokenizer.eos_token_id,
-        pad_token_id=tokenizer.pad_token_id, use_cache=False,
+        pad_token_id=tokenizer.pad_token_id, use_cache=True,
     ))
     Dataset.from_list([sample, sample]).save_to_disk(str(tmp_path / "data"))
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", lambda *a, **kw: tokenizer)
@@ -320,6 +368,7 @@ def test_one_cpu_training_step_and_save(sample, tokenizer, tmp_path, monkeypatch
         "--save-steps", "1", "--no-gradient-checkpointing", "--local-files-only",
     ])
     assert (output / "final/model.safetensors").exists()
+    assert model.config.use_cache is False
     assert (output / "final/tokenizer.json").exists()
     assert (output / "checkpoint-1/trainer_state.json").exists()
     assert (output / "training_chat_template.jinja").exists()

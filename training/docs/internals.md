@@ -56,7 +56,7 @@
 | `packing=False` | 不將多筆 conversation 打包成同一訓練序列。 |
 | `truncation_mode="keep_start"` | 超長時保留前 `MAX_LENGTH` 個 tokens，截掉尾端。 |
 | `eos_token="<\|im_end\|>"` | 使用目前 Qwen template 的 turn 結束 token。 |
-| `use_cache=False` | 模型載入時關閉 generation KV cache。 |
+| `use_cache=False` | 模型建立後、訓練前，透過 `model.config.get_text_config()` 關閉 KV cache；不直接傳入模型 constructor，支援 Qwen3.5 的巢狀 `text_config`。 |
 | `device_map=None` | 由 Trainer 放置模型，不使用 inference-style 自動切分。 |
 
 特別注意：`keep_start` 可能截掉 reasoning 的後半段或最終答案；即使仍有部分 assistant tokens，該筆也會繼續訓練。只有完全沒有可用 loss token 的樣本才會被丟掉。因此「處理前後筆數相同」不代表沒有截斷。
