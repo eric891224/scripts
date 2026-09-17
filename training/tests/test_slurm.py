@@ -19,12 +19,15 @@ SPEC.loader.exec_module(training)
 @pytest.fixture
 def launcher_env(tmp_path):
     """Replace Python and srun with local argv captures, not training processes."""
+    template = (TRAINING_DIR / "envs/tp1/.env.example.sh").read_text()
+    config_keys = {line.split("=", 1)[0].removeprefix("export ")
+                   for line in template.splitlines() if line.startswith("export ")}
     env = {
         key: value for key, value in os.environ.items()
-        if not key.startswith(("SLURM_", "WANDB_")) and key not in {
+        if key not in config_keys and not key.startswith(("SLURM_", "WANDB_")) and key not in {
             "RANK", "LOCAL_RANK", "WORLD_SIZE", "NPROC_PER_NODE", "DEEPSPEED_CONFIG",
             "WORKSPACE_DIR", "BATCH_SIZE", "GRADIENT_ACCUMULATION_STEPS", "OUTPUT_DIR",
-            "REPORT_TO", "DTYPE", "CUDA_VISIBLE_DEVICES", "CHAT_TEMPLATE",
+            "REPORT_TO", "DTYPE", "CUDA_VISIBLE_DEVICES", "CHAT_TEMPLATE", "TRAINING_ENV_FILE",
         }
     }
     interpreter = tmp_path / "python capture"
@@ -45,7 +48,10 @@ def launcher_env(tmp_path):
         "os.execvp(command[0], command)\n"
     )
     srun.chmod(0o755)
+    config = tmp_path / "training config.sh"
+    config.write_text(template)
     env.update({
+        "TRAINING_ENV_FILE": str(config),
         "PYTHON_BIN": str(interpreter),
         "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
         "SRUN_CAPTURE": str(tmp_path / "srun.json"),
@@ -65,15 +71,120 @@ def test_default_python_uses_tp1_without_sm_dp_checkout(launcher_env, tmp_path, 
     python.parent.mkdir(parents=True)
     python.write_text(Path(launcher_env["PYTHON_BIN"]).read_text())
     python.chmod(0o755)
-    for name in ["run_training.sh", "submit_training.sbatch"]:
+    for name in ["run_training.sh", "submit_training.sbatch", "load_env.sh", "deepspeed_zero2.json"]:
         (training_dir / name).write_text((TRAINING_DIR / name).read_text())
+    (training_dir / "envs/tp1/.env.sh").write_text((TRAINING_DIR / "envs/tp1/.env.example.sh").read_text())
     env = launcher_env.copy()
     del env["PYTHON_BIN"]
+    del env["TRAINING_ENV_FILE"]
+    if launcher == "submit_training.sbatch":
+        env["TRAINING_ENV_FILE"] = str(training_dir / "envs/tp1/.env.sh")
     env.update({"SLURM_JOB_ID": "123", "SLURM_SUBMIT_DIR": str(workspace)})
     result = invoke(training_dir / launcher, env, tmp_path)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["interpreter"] == str(python)
     assert not (workspace / "sm-dp").exists()
+
+
+@pytest.mark.parametrize("launcher", ["run_training.sh", "submit_training.sbatch"])
+def test_missing_config_fails_before_launch(launcher_env, tmp_path, launcher):
+    env = launcher_env | {"TRAINING_ENV_FILE": str(tmp_path / "missing.sh"),
+                          "SLURM_JOB_ID": "1", "WORKSPACE_DIR": str(TRAINING_DIR.parents[1])}
+    result = invoke(TRAINING_DIR / launcher, env, tmp_path)
+    assert result.returncode == 2
+    assert "Training config not found" in result.stderr
+    assert "Check TRAINING_ENV_FILE" in result.stderr
+    assert not result.stdout
+    assert not Path(env["SRUN_CAPTURE"]).exists()
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_slurm_requires_explicit_config_without_guessing(launcher_env, tmp_path, value):
+    env = launcher_env | {"SLURM_JOB_ID": "1", "WORKSPACE_DIR": str(TRAINING_DIR.parents[1])}
+    if value is None:
+        del env["TRAINING_ENV_FILE"]
+    else:
+        env["TRAINING_ENV_FILE"] = value
+    result = invoke(TRAINING_DIR / "submit_training.sbatch", env, tmp_path)
+    assert result.returncode == 2
+    assert "Set TRAINING_ENV_FILE" in result.stderr
+    assert not result.stdout
+    assert not Path(env["SRUN_CAPTURE"]).exists()
+
+
+def test_slurm_works_without_envs_directory(launcher_env, tmp_path):
+    workspace = tmp_path / "independent workspace"
+    training_dir = workspace / "scripts/training"
+    training_dir.mkdir(parents=True)
+    for name in ["run_training.sh", "submit_training.sbatch", "load_env.sh", "deepspeed_zero2.json"]:
+        (training_dir / name).write_text((TRAINING_DIR / name).read_text())
+    # Config and interpreter both live outside the workspace. sbatch executes
+    # a spooled copy, and the child launcher must use the same explicit config.
+    spooled = tmp_path / "slurm_script"
+    spooled.write_text((training_dir / "submit_training.sbatch").read_text())
+    env = launcher_env | {"SLURM_JOB_ID": "777", "SLURM_SUBMIT_DIR": str(workspace)}
+    result = invoke(spooled, env, tmp_path, "--max-steps", "2")
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["interpreter"] == env["PYTHON_BIN"]
+    args = training.parse_args(payload["argv"][7:])
+    assert args.max_steps == 2
+    assert args.deepspeed == training_dir / "deepspeed_zero2.json"
+    assert args.output_dir == workspace / "outputs/qwen-zero2-777"
+    assert not (training_dir / "envs").exists()
+    for name in ["submit_training.sbatch", "load_env.sh"]:
+        assert "envs/" not in (training_dir / name).read_text()
+
+
+def test_incomplete_config_has_no_launcher_fallbacks(launcher_env, tmp_path):
+    Path(launcher_env["TRAINING_ENV_FILE"]).write_text('export MODEL="test"\n')
+    result = invoke(TRAINING_DIR / "run_training.sh", launcher_env, tmp_path)
+    assert result.returncode == 2
+    assert "Missing required training setting DATASET" in result.stderr
+    assert not result.stdout
+
+
+@pytest.mark.parametrize("launcher", ["run_training.sh", "submit_training.sbatch"])
+def test_config_environment_and_cli_precedence(launcher_env, tmp_path, launcher):
+    config = Path(launcher_env["TRAINING_ENV_FILE"])
+    config.write_text(config.read_text().replace('BATCH_SIZE:-1', 'BATCH_SIZE:-3'))
+    env = launcher_env | {"SLURM_JOB_ID": "1", "WORKSPACE_DIR": str(TRAINING_DIR.parents[1])}
+    for overrides, cli, expected in [({}, [], 3), ({"BATCH_SIZE": "4"}, [], 4),
+                                     ({"BATCH_SIZE": "4"}, ["--batch-size", "5"], 5)]:
+        result = invoke(TRAINING_DIR / launcher, env | overrides, tmp_path, *cli)
+        assert result.returncode == 0, result.stderr
+        assert training.parse_args(json.loads(result.stdout)["argv"][7:]).batch_size == expected
+
+
+def test_relative_config_path_survives_slurm_working_directory(launcher_env, tmp_path):
+    workspace = TRAINING_DIR.parents[1]
+    env = launcher_env | {"SLURM_JOB_ID": "1", "WORKSPACE_DIR": str(workspace),
+                          "TRAINING_ENV_FILE": os.path.relpath(launcher_env["TRAINING_ENV_FILE"], workspace)}
+    result = invoke(TRAINING_DIR / "submit_training.sbatch", env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "--nproc-per-node=8" in json.loads(result.stdout)["argv"]
+
+
+@pytest.mark.parametrize("overrides,message", [
+    ({"NPROC_PER_NODE": "1"}, "requires NPROC_PER_NODE=8"),
+    ({"DEEPSPEED_CONFIG": ""}, "requires DEEPSPEED_CONFIG"),
+    ({"DEEPSPEED_CONFIG": "/missing/config.json"}, "requires DEEPSPEED_CONFIG"),
+])
+def test_slurm_rejects_incompatible_settings(launcher_env, tmp_path, overrides, message):
+    env = launcher_env | {"SLURM_JOB_ID": "1", "WORKSPACE_DIR": str(TRAINING_DIR.parents[1])} | overrides
+    result = invoke(TRAINING_DIR / "submit_training.sbatch", env, tmp_path)
+    assert result.returncode == 2
+    assert message in result.stderr
+    assert not Path(env["SRUN_CAPTURE"]).exists()
+
+
+def test_single_process_can_disable_deepspeed_with_empty_override(launcher_env, tmp_path):
+    env = launcher_env | {"NPROC_PER_NODE": "1", "DEEPSPEED_CONFIG": ""}
+    result = invoke(TRAINING_DIR / "run_training.sh", env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    argv = json.loads(result.stdout)["argv"]
+    assert argv[0] == str(TRAINING_DIR / "training.py")
+    assert "--deepspeed" not in argv
 
 
 def test_torchrun_is_launched_once_with_deepspeed_and_cli_overrides(launcher_env, tmp_path):
@@ -93,7 +204,7 @@ def test_torchrun_is_launched_once_with_deepspeed_and_cli_overrides(launcher_env
 
 @pytest.mark.parametrize("value", [None, "", "/path with spaces/custom.jinja"])
 def test_launcher_only_passes_optional_template_when_set(launcher_env, tmp_path, value):
-    env = launcher_env.copy()
+    env = launcher_env | {"NPROC_PER_NODE": "1"}
     if value is not None:
         env["CHAT_TEMPLATE"] = value
     result = invoke(TRAINING_DIR / "run_training.sh", env, tmp_path)
@@ -105,7 +216,7 @@ def test_launcher_only_passes_optional_template_when_set(launcher_env, tmp_path,
 
 
 def test_cli_template_override_wins_over_environment(launcher_env, tmp_path):
-    env = launcher_env | {"CHAT_TEMPLATE": "/env/template.jinja"}
+    env = launcher_env | {"CHAT_TEMPLATE": "/env/template.jinja", "NPROC_PER_NODE": "1"}
     result = invoke(TRAINING_DIR / "run_training.sh", env, tmp_path, "--chat-template", "/cli/template.jinja")
     assert result.returncode == 0, result.stderr
     argv = json.loads(result.stdout)["argv"]

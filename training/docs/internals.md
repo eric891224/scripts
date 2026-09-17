@@ -15,7 +15,9 @@
 | 檔案 | 負責的事情 |
 | --- | --- |
 | [training.py](../training.py) | 載入已儲存的 Dataset、轉接 reasoning 欄位、預覽 loss tokens、執行 SFT 並儲存結果。 |
-| [run_training.sh](../run_training.sh) | 把環境變數轉成 Python CLI 參數；不負責轉換或混合資料。 |
+| [load_env.sh](../load_env.sh) | 共用設定讀取與驗證：只載入 `TRAINING_ENV_FILE` 指定的檔案，不知道 `envs/`，不定義訓練 defaults。 |
+| [設定範本](../envs/tp1/.env.example.sh) | 複製為 `.env.sh` 後集中管理訓練參數。 |
+| [run_training.sh](../run_training.sh) | 載入設定、轉成 Python CLI 參數、啟動訓練；不負責轉換或混合資料。 |
 | [submit_training.sbatch](../submit_training.sbatch) | 申請單節點 8 GPU，設定 job 輸出位置，啟動一個 Slurm task。 |
 | [deepspeed_zero2.json](../deepspeed_zero2.json) | ZeRO-2 配置，batch size 與 precision 由 Trainer 同步。 |
 | [test_training.py](../tests/test_training.py) | 測試欄位轉接、template、loss mask、CLI、輸出保護及小型 CPU 訓練。 |
@@ -126,7 +128,9 @@
 ```bash
 uv run --project scripts/training/envs/tp1 --locked --with pytest \
   python -m pytest scripts/training/tests -q
-bash -n scripts/training/run_training.sh scripts/training/submit_training.sbatch
+for file in scripts/training/{run_training.sh,submit_training.sbatch,load_env.sh,envs/tp1/.env.example.sh}; do
+  bash -n "$file"
+done
 ```
 
 測試使用本地建立的 tokenizer、小型隨機 GPT-2 模型與暫存 Dataset，不需下載模型或使用 GPU。包含 reasoning 欄位轉接、多輪 loss mask、空 reasoning、截斷、離線路徑、CLI 傳遞、輸出保護、dry-run 不建立 Trainer，以及真正的一步 CPU 訓練和儲存。

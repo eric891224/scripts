@@ -22,9 +22,10 @@ workspace/
 
 ```bash
 uv sync --project scripts/training/envs/tp1 --locked
+cp -n scripts/training/envs/tp1/.env.example.sh scripts/training/envs/tp1/.env.sh
 ```
 
-Launcher 預設使用 `scripts/training/envs/tp1/.venv/bin/python`；其他環境可用 `PYTHON_BIN` 覆蓋。DeepSpeed 安裝與個人設定見 [TP1 環境說明](../envs/tp1/README.md)。
+編輯 `.env.sh` 的模型與資料路徑；launcher 會自動載入，預設採用 8-GPU ZeRO-2。已有舊設定請對照新範本補齊欄位。Python 預設為 `scripts/training/envs/tp1/.venv/bin/python`；DeepSpeed 安裝與覆寫規則見 [TP1 環境說明](../envs/tp1/README.md)。
 
 Chat template 預設直接使用模型 tokenizer 附帶的版本，不需要額外放置 `qwen.jinja`。只有需要自訂時才設定 `CHAT_TEMPLATE=/path/to/custom.jinja` 或 `--chat-template /path/to/custom.jinja`。缺少 template 或 TRL 不支援時會明確報錯，不會自動改用其他模型的格式。
 
@@ -36,6 +37,7 @@ Chat template 預設直接使用模型 tokenizer 附帶的版本，不需要額�
 
 ```bash
 DATASET=/path/to/uploaded-dataset \
+NPROC_PER_NODE=1 \
 bash scripts/training/run_training.sh --dry-run --preview-samples 3
 ```
 
@@ -62,7 +64,7 @@ Dry-run 只檢查指定的前幾筆，不是全資料集驗證，也不能確認
 如果 config 與 tokenizer 已快取：
 
 ```bash
-bash scripts/training/run_training.sh --dry-run --local-files-only
+NPROC_PER_NODE=1 bash scripts/training/run_training.sh --dry-run --local-files-only
 ```
 
 也可以直接指定模型目錄：
@@ -70,6 +72,7 @@ bash scripts/training/run_training.sh --dry-run --local-files-only
 ```bash
 MODEL=/path/to/Qwen3.5-9B \
 DATASET=/path/to/mixed-dataset \
+NPROC_PER_NODE=1 \
 bash scripts/training/run_training.sh --dry-run --local-files-only
 ```
 

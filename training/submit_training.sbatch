@@ -12,6 +12,8 @@
 # Site-specific: pass --partition / --account / --qos / --constraint to sbatch.
 # Select an H100 80GB partition/constraint; generic gpu:8 alone does NOT do so.
 # Submit from workspace root, or export WORKSPACE_DIR as an absolute path.
+# Provide TRAINING_ENV_FILE explicitly; its location and Python environment are
+# chosen by the caller, not by this Slurm template.
 # sbatch copies this file to a spool directory: do NOT derive paths from $0.
 set -euo pipefail
 
@@ -34,17 +36,16 @@ fi
 
 # Load the cluster's CUDA/compiler modules or activate its environment HERE,
 # if needed. No module names or container image are assumed by this template.
-export PYTHON_BIN="${PYTHON_BIN:-${WORKSPACE_DIR}/scripts/training/envs/tp1/.venv/bin/python}"
-export NPROC_PER_NODE=8
-export BATCH_SIZE="${BATCH_SIZE:-1}"
-export GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-2}"
-export DTYPE="${DTYPE:-bf16}"
-export DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-${WORKSPACE_DIR}/scripts/training/deepspeed_zero2.json}"
-export OUTPUT_DIR="${OUTPUT_DIR:-${WORKSPACE_DIR}/outputs/qwen-zero2-${SLURM_JOB_ID}}"
-export WANDB_NAME="${WANDB_NAME:-qwen-zero2-${SLURM_JOB_ID}}"
-export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-export TOKENIZERS_PARALLELISM=false
-export PYTHONUNBUFFERED=1
+# The shared loader requires TRAINING_ENV_FILE and has no environment-directory default.
+source "${WORKSPACE_DIR}/scripts/training/load_env.sh"
+if [[ "${NPROC_PER_NODE}" != 8 ]]; then
+    echo "This Slurm template requires NPROC_PER_NODE=8; update your training config." >&2
+    exit 2
+fi
+if [[ -z "${DEEPSPEED_CONFIG:-}" || ! -f "${DEEPSPEED_CONFIG}" ]]; then
+    echo "This Slurm template requires DEEPSPEED_CONFIG to name an existing config file." >&2
+    exit 2
+fi
 
 # Leave CUDA_VISIBLE_DEVICES under Slurm's control. Never overwrite it with 0..7.
 # Read-only preflight; no model weights are loaded here.

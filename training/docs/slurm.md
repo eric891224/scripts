@@ -17,7 +17,9 @@
 3. **共享路徑**：compute node 需能讀取 workspace、模型、tokenizer 與 Dataset，並能寫入資料 cache 與輸出目錄。Template 預設隨 tokenizer 載入；只有指定 `CHAT_TEMPLATE`／`--chat-template` 時才需額外準備該 Jinja 檔案。
 4. **資源與儲存空間**：8 GPU 的 full fine-tuning、optimizer checkpoints 與 `final/` 都需要實測容量與寫入時間；本文件列出的 CPU/RAM/time 是可調的起始值，不是已驗證容量保證。
 
-依 [TP1 環境說明](../envs/tp1/README.md) 建立訓練環境並安裝 DeepSpeed；launcher 預設使用 `envs/tp1/.venv/bin/python`。資料上傳方式見 [Quickstart](quickstart.md#setup)。
+提交時必須指定 `TRAINING_ENV_FILE=/absolute/path/to/experiment.sh`。Slurm 不搜尋 `envs/`，也不選擇 Python 環境；設定檔中的 `PYTHON_BIN` 應指向已安裝訓練依賴與 DeepSpeed 的 interpreter。可沿用 [TP1 設定範本](../envs/tp1/README.md)，也可將設定與 Python 環境放在其他共享路徑。
+
+Slurm script 要求 `NPROC_PER_NODE=8` 與有效的 `DEEPSPEED_CONFIG`，不會覆寫你的訓練參數。資料上傳方式見 [Quickstart](quickstart.md#setup)。
 
 腳本執行前會檢查 DeepSpeed 可 import、CUDA 可用、剛好看見 8 張 GPU，並列印 PyTorch/CUDA/DeepSpeed 版本與 GPU 名稱／記憶體。這不代表完整 backward 或 checkpoint 已驗證。
 
@@ -28,6 +30,7 @@
 以下 `YOUR_H100_PARTITION` 與 `YOUR_ACCOUNT` 必須替換成你的 cluster 設定；若站台不需要 account，移除該選項。從 workspace 根目錄提交：
 
 ```bash
+TRAINING_ENV_FILE=/absolute/path/to/experiment.sh \
 MAX_STEPS=2 \
 MAX_TRAIN_SAMPLES=32 \
 LOGGING_STEPS=1 \
@@ -36,7 +39,7 @@ sbatch --partition=YOUR_H100_PARTITION --account=YOUR_ACCOUNT \
   --time=00:30:00 scripts/training/submit_training.sbatch
 ```
 
-這會保持 global batch 16。第一次還包含模型載入、preprocessing，以及可能的 DeepSpeed 編譯；30 分鐘只是起始測試時間，可依站台調整。中途與最後儲存仍是完整模型／訓練狀態，並不因只跑兩步就變成小檔案。
+使用範本設定時 global batch 為 16。第一次還包含模型載入、preprocessing，以及可能的 DeepSpeed 編譯；30 分鐘只是起始測試時間，可依站台調整。中途與最後儲存仍是完整模型／訓練狀態，並不因只跑兩步就變成小檔案。
 
 檢查 `slurm-<job-name>-<job-id>.out`／`.err`：
 
@@ -55,6 +58,7 @@ Slurm logs 預設寫入提交目錄；若自行用 `--output`／`--error` 指向
 Smoke test 成功後，使用全部資料跑一個 epoch，例如：
 
 ```bash
+TRAINING_ENV_FILE=/absolute/path/to/experiment.sh \
 REPORT_TO=wandb \
 MAX_STEPS=-1 \
 MAX_TRAIN_SAMPLES= \
@@ -74,6 +78,7 @@ Slurm 會將 `.sbatch` 複製到 spool 目錄，因此腳本透過 `SLURM_SUBMIT
 續訓時指定原 run 目錄與 checkpoint（`1234` 為示例 job ID）：
 
 ```bash
+TRAINING_ENV_FILE=/absolute/path/to/experiment.sh \
 OUTPUT_DIR=outputs/qwen-zero2-1234 \
 RESUME_FROM_CHECKPOINT=outputs/qwen-zero2-1234/checkpoint-250 \
 sbatch --partition=YOUR_H100_PARTITION --account=YOUR_ACCOUNT \
@@ -110,7 +115,7 @@ sbatch：1 node、8 GPUs、1 task
 
 **不要改成 8 個 Slurm tasks 再各自啟動 torchrun。** 這會重複建立 workers。腳本會拒絕多節點／多 Slurm task 配置，也不會覆寫 Slurm 提供的 `CUDA_VISIBLE_DEVICES`。
 
-| 設定 | Slurm template 預設 |
+| 設定 | `.sbatch` 資源／`.env.example.sh` 訓練初始值 |
 | --- | --- |
 | 節點／GPU／Slurm tasks | 1／8／1 |
 | CPU／host RAM／時間 | 32 CPUs／256 GiB (`--mem=256G`)／2 小時；均需依 cluster 與實際工作量調整。 |

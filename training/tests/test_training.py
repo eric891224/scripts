@@ -202,12 +202,26 @@ def test_nonempty_output_requires_explicit_resume(tmp_path):
     training.check_output_directory(args)
 
 
-def test_launcher_preserves_spaces_and_cli_overrides(tmp_path):
+@pytest.fixture
+def single_process_env(tmp_path):
+    """Use the public template, never a developer's private .env.sh."""
+    template = (TRAINING_DIR / "envs/tp1/.env.example.sh").read_text()
+    keys = {line.split("=", 1)[0].removeprefix("export ")
+            for line in template.splitlines() if line.startswith("export ")}
+    env = {key: value for key, value in os.environ.items()
+           if key not in keys and not key.startswith(("SLURM_", "WANDB_"))
+           and key not in {"RANK", "LOCAL_RANK", "WORLD_SIZE"}}
+    config = tmp_path / "training config.sh"
+    config.write_text(template)
+    return env | {"TRAINING_ENV_FILE": str(config), "NPROC_PER_NODE": "1", "DEEPSPEED_CONFIG": ""}
+
+
+def test_launcher_preserves_spaces_and_cli_overrides(tmp_path, single_process_env):
     # Capture argv as JSON using a stand-in interpreter; no training is started.
     interpreter = tmp_path / "capture args"
     interpreter.write_text(f"#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
     interpreter.chmod(0o755)
-    env = os.environ | {"PYTHON_BIN": str(interpreter), "MODEL": "model with spaces", "MAX_STEPS": "7"}
+    env = single_process_env | {"PYTHON_BIN": str(interpreter), "MODEL": "model with spaces", "MAX_STEPS": "7"}
     result = subprocess.run(
         ["bash", str(TRAINING_DIR / "run_training.sh"), "--max-steps", "2", "--dry-run"],
         cwd=tmp_path, env=env, check=True, capture_output=True, text=True,
@@ -232,12 +246,12 @@ def test_launcher_preserves_spaces_and_cli_overrides(tmp_path):
     }, [], "wandb"),
     ({"REPORT_TO": "wandb"}, ["--report-to", "none"], "none"),
 ])
-def test_launcher_exports_wandb_settings(tmp_path, overrides, extra_args, expected_report):
+def test_launcher_exports_wandb_settings(tmp_path, single_process_env, overrides, extra_args, expected_report):
     """Inspect only selected settings in a stand-in process; never contact W&B."""
     defaults = {
         "WANDB_ENTITY": "s96006730-siliconmind",
         "WANDB_PROJECT": "sm-dp-training",
-        "WANDB_NAME": "qwen35-domain80-retention20-v1",
+        "WANDB_NAME": "qwen-zero2-local",
         "WANDB_LOG_MODEL": "false",
     }
     interpreter = tmp_path / "capture wandb settings"
@@ -247,7 +261,7 @@ def test_launcher_exports_wandb_settings(tmp_path, overrides, extra_args, expect
         "print(json.dumps({'argv': sys.argv[2:], 'settings': settings}))\n"
     )
     interpreter.chmod(0o755)
-    env = {key: value for key, value in os.environ.items() if key not in {*defaults, "REPORT_TO"}}
+    env = single_process_env.copy()
     env.update(overrides)
     env["PYTHON_BIN"] = str(interpreter)
     result = subprocess.run(

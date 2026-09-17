@@ -8,6 +8,7 @@
 | --- | --- |
 | **在 Slurm／8 × H100 上訓練** | [Slurm 操作手冊](docs/slurm.md) |
 | 第一次使用：環境、資料、dry-run | [Quickstart](docs/quickstart.md) |
+| 集中設定 `.env.sh`、選擇實驗配方 | [TP1 設定說明](envs/tp1/README.md) |
 | 啟動一般訓練、續訓、找輸出 | [Training 操作手冊](docs/training.md) |
 | 查環境變數、CLI、batch size 等設定 | [完整參數表](docs/training.md#parameters) |
 | 接 W&B、設定 project／run、離線記錄 | [W&B 操作手冊](docs/wandb.md) |
