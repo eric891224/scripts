@@ -8,6 +8,7 @@
 #SBATCH --time=02:00:00
 #SBATCH --output=slurm-%x-%j.out
 #SBATCH --error=slurm-%x-%j.err
+#SBATCH --partition=p01
 
 # Site-specific: pass --partition / --account / --qos / --constraint to sbatch.
 # Select an H100 80GB partition/constraint; generic gpu:8 alone does NOT do so.
