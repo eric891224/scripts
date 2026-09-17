@@ -35,7 +35,7 @@ def launcher_env(tmp_path):
         f"#!{sys.executable}\nimport json, os, sys\n"
         "if sys.argv[1:2] == ['-c']: sys.exit(0)  # simulate GPU/dependency preflight\n"
         "keys = ['OUTPUT_DIR', 'WANDB_NAME', 'CUDA_VISIBLE_DEVICES', 'BATCH_SIZE', "
-        "'GRADIENT_ACCUMULATION_STEPS', 'DEEPSPEED_CONFIG', 'NPROC_PER_NODE']\n"
+        "'GRADIENT_ACCUMULATION_STEPS', 'DEEPSPEED_CONFIG', 'NPROC_PER_NODE', 'CC', 'CXX']\n"
         "print(json.dumps({'interpreter': sys.argv[0], 'argv': sys.argv[1:], 'env': {k: os.environ.get(k) for k in keys}}))\n"
     )
     interpreter.chmod(0o755)
@@ -61,6 +61,19 @@ def launcher_env(tmp_path):
 
 def invoke(path, env, cwd, *args):
     return subprocess.run(["bash", str(path), *args], env=env, cwd=cwd, text=True, capture_output=True)
+
+
+@pytest.mark.parametrize("launcher", ["run_training.sh", "submit_training.sbatch"])
+def test_tp1_overrides_inherited_nvhpc_compilers(launcher_env, tmp_path, launcher):
+    env = launcher_env | {
+        "CC": "/cluster/nvc", "CXX": "/cluster/nvc++",
+        "SLURM_JOB_ID": "1", "WORKSPACE_DIR": str(TRAINING_DIR.parents[1]),
+    }
+    result = invoke(TRAINING_DIR / launcher, env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    captured = json.loads(result.stdout)["env"]
+    assert captured["CC"] == "/cm/local/apps/gcc/14.2.0/bin/gcc"
+    assert captured["CXX"] == "/cm/local/apps/gcc/14.2.0/bin/g++"
 
 
 @pytest.mark.parametrize("launcher", ["run_training.sh", "submit_training.sbatch"])

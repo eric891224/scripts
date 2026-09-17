@@ -3,6 +3,12 @@
 # here, never API keys. TRAINING_DIR and WORKSPACE_DIR are supplied by the loader.
 # Precedence: Python CLI > existing environment > defaults in this file.
 
+# TP1 cluster toolchain exception: override inherited NVHPC CC/CXX explicitly.
+# Triton's CUDA helper failed with nvc on this cluster and succeeded with GCC.
+# These are site-specific paths; edit them when moving to another cluster.
+export CC=/cm/local/apps/gcc/14.2.0/bin/gcc
+export CXX=/cm/local/apps/gcc/14.2.0/bin/g++
+
 export PYTHON_BIN="${PYTHON_BIN:-${TRAINING_DIR}/envs/tp1/.venv/bin/python}"
 export MODEL="${MODEL:-Qwen/Qwen3.5-9B}"
 export DATASET="${DATASET:-${WORKSPACE_DIR}/dataset/mixed/siliconmind-retention-v1}"

@@ -24,6 +24,8 @@ uv pip install --python scripts/training/envs/tp1/.venv/bin/python deepspeed
 
 DeepSpeed 尚未納入 lockfile；請先 sync 再安裝，重新 sync 可能移除額外套件。部署時另記錄實際 DeepSpeed 版本。
 
+TP1 範本明確設定 `CC=/cm/local/apps/gcc/14.2.0/bin/gcc`、`CXX=/cm/local/apps/gcc/14.2.0/bin/g++`，覆寫 cluster 繼承的 NVHPC 編譯器：此次 server 測試中，Triton CUDA 輔助模組使用 `nvc` 編譯失敗，改用 GCC 後成功。這是站台工具鏈設定，不代表所有 TP1／Triton 環境都有此問題；換 cluster 時請修改路徑，並確認 compute node 可存取。這兩項是環境變數優先規則的例外，需直接修改設定檔；已有 `.env.sh` 請同步加入這兩行。
+
 ## 設定訓練參數（必要）
 
 ```bash
