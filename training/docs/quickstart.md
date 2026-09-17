@@ -16,7 +16,6 @@
 workspace/
   sm-dp/                     # pyproject.toml、uv.lock、.venv/
   scripts/training/
-  qwen.jinja                 # 模型的 inference chat template
   dataset/mixed/siliconmind-retention-v1/
 ```
 
@@ -27,6 +26,8 @@ uv sync --project sm-dp --locked
 ```
 
 Launcher 預設使用 `sm-dp/.venv/bin/python`。Server 若使用另一個環境，可以設定 `PYTHON_BIN=/path/to/python`。GPU 驅動、PyTorch/CUDA 相容性及 BF16 支援仍需在 server 確認；建立 Python 環境不代表 GPU 已配置完成。
+
+Chat template 預設直接使用模型 tokenizer 附帶的版本，不需要額外放置 `qwen.jinja`。只有需要自訂時才設定 `CHAT_TEMPLATE=/path/to/custom.jinja` 或 `--chat-template /path/to/custom.jinja`。缺少 template 或 TRL 不支援時會明確報錯，不會自動改用其他模型的格式。
 
 訓練輸入必須是由 Hugging Face `Dataset.save_to_disk()` 儲存的**單一 Dataset**，包含 canonical `messages`。不是 JSONL 路徑、Hub dataset ID 或 `DatasetDict`。程式只檢查基本結構，不能取代前面的 converter/schema validation。
 
@@ -79,7 +80,6 @@ bash scripts/training/run_training.sh --dry-run --local-files-only
 ```bash
 MODEL=/path/to/Qwen3.5-9B \
 DATASET=/path/to/mixed-dataset \
-CHAT_TEMPLATE=/path/to/qwen.jinja \
 bash scripts/training/run_training.sh --dry-run --local-files-only
 ```
 

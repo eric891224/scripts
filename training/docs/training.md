@@ -110,7 +110,7 @@ bash scripts/training/run_training.sh --help
 | `MODEL` | `--model` | `Qwen/Qwen3.5-9B`；也接受本地模型目錄。 |
 | `DATASET` | `--dataset` | `<workspace>/dataset/mixed/siliconmind-retention-v1`。 |
 | `OUTPUT_DIR` | `--output-dir` | `<workspace>/outputs/qwen-domain-retention`。 |
-| `CHAT_TEMPLATE` | `--chat-template` | `<workspace>/qwen.jinja`；不會自動跟著 `MODEL` 更換。 |
+| `CHAT_TEMPLATE` | `--chat-template` | 預設未設定，使用 `MODEL` 的 tokenizer template；指定 Jinja 檔案時才覆蓋，空環境變數視為未設定。 |
 | `EPOCHS` | `--epochs` | `1`。 |
 | `MAX_STEPS` | `--max-steps` | `-1` 表示由 epochs 控制；正整數會覆蓋 epochs。 |
 | `LEARNING_RATE` | `--learning-rate` | `2e-5`。 |

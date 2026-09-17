@@ -12,7 +12,8 @@ PYTHON_BIN="${PYTHON_BIN:-${WORKSPACE_DIR}/sm-dp/.venv/bin/python}"
 MODEL="${MODEL:-Qwen/Qwen3.5-9B}"
 DATASET="${DATASET:-${WORKSPACE_DIR}/dataset/mixed/siliconmind-retention-v1}"
 OUTPUT_DIR="${OUTPUT_DIR:-${WORKSPACE_DIR}/outputs/qwen-domain-retention}"
-CHAT_TEMPLATE="${CHAT_TEMPLATE:-${WORKSPACE_DIR}/qwen.jinja}"
+# Optional override; otherwise use the template shipped with MODEL's tokenizer.
+CHAT_TEMPLATE="${CHAT_TEMPLATE:-}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 if [[ ! "${NPROC_PER_NODE}" =~ ^[1-9][0-9]*$ ]]; then
     echo "NPROC_PER_NODE must be a positive integer" >&2
@@ -32,7 +33,6 @@ args=(
     --model "${MODEL}"
     --dataset "${DATASET}"
     --output-dir "${OUTPUT_DIR}"
-    --chat-template "${CHAT_TEMPLATE}"
     --epochs "${EPOCHS:-1}"
     --max-steps "${MAX_STEPS:--1}"
     --learning-rate "${LEARNING_RATE:-2e-5}"
@@ -49,6 +49,9 @@ args=(
     --report-to "${REPORT_TO}"
 )
 
+if [[ -n "${CHAT_TEMPLATE}" ]]; then
+    args+=(--chat-template "${CHAT_TEMPLATE}")
+fi
 if [[ -n "${MAX_TRAIN_SAMPLES:-}" ]]; then
     args+=(--max-train-samples "${MAX_TRAIN_SAMPLES}")
 fi

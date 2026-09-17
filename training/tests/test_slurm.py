@@ -24,7 +24,7 @@ def launcher_env(tmp_path):
         if not key.startswith(("SLURM_", "WANDB_")) and key not in {
             "RANK", "LOCAL_RANK", "WORLD_SIZE", "NPROC_PER_NODE", "DEEPSPEED_CONFIG",
             "WORKSPACE_DIR", "BATCH_SIZE", "GRADIENT_ACCUMULATION_STEPS", "OUTPUT_DIR",
-            "REPORT_TO", "DTYPE", "CUDA_VISIBLE_DEVICES",
+            "REPORT_TO", "DTYPE", "CUDA_VISIBLE_DEVICES", "CHAT_TEMPLATE",
         }
     }
     interpreter = tmp_path / "python capture"
@@ -68,6 +68,29 @@ def test_torchrun_is_launched_once_with_deepspeed_and_cli_overrides(launcher_env
     args = training.parse_args(argv[7:])
     assert args.deepspeed == config
     assert args.max_steps == 2
+    assert "--chat-template" not in argv
+    assert args.chat_template is None
+
+
+@pytest.mark.parametrize("value", [None, "", "/path with spaces/custom.jinja"])
+def test_launcher_only_passes_optional_template_when_set(launcher_env, tmp_path, value):
+    env = launcher_env.copy()
+    if value is not None:
+        env["CHAT_TEMPLATE"] = value
+    result = invoke(TRAINING_DIR / "run_training.sh", env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    argv = json.loads(result.stdout)["argv"]
+    assert ("--chat-template" in argv) == bool(value)
+    args = training.parse_args(argv[1:])
+    assert args.chat_template == (Path(value) if value else None)
+
+
+def test_cli_template_override_wins_over_environment(launcher_env, tmp_path):
+    env = launcher_env | {"CHAT_TEMPLATE": "/env/template.jinja"}
+    result = invoke(TRAINING_DIR / "run_training.sh", env, tmp_path, "--chat-template", "/cli/template.jinja")
+    assert result.returncode == 0, result.stderr
+    argv = json.loads(result.stdout)["argv"]
+    assert training.parse_args(argv[1:]).chat_template == Path("/cli/template.jinja")
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "eight"])
@@ -102,6 +125,7 @@ def test_slurm_spooled_script_launches_one_task_eight_workers(launcher_env, tmp_
     assert args.batch_size * args.gradient_accumulation_steps * 8 == 16
     assert args.dtype == "bf16"
     assert args.deepspeed == TRAINING_DIR / "deepspeed_zero2.json"
+    assert args.chat_template is None
     assert args.output_dir.name == "qwen-zero2-1234"
     assert payload["env"]["WANDB_NAME"] == "qwen-zero2-1234"
     assert payload["env"]["CUDA_VISIBLE_DEVICES"] == env["CUDA_VISIBLE_DEVICES"]

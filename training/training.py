@@ -28,7 +28,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model", default="Qwen/Qwen3.5-9B")
     parser.add_argument("--dataset", type=Path, default=WORKSPACE / "dataset/mixed/siliconmind-retention-v1")
     parser.add_argument("--output-dir", type=Path, default=WORKSPACE / "outputs/qwen-domain-retention")
-    parser.add_argument("--chat-template", type=Path, default=WORKSPACE / "qwen.jinja")
+    parser.add_argument(
+        "--chat-template", type=Path,
+        help="Optional Jinja file override; defaults to the tokenizer's own chat template.",
+    )
     parser.add_argument("--deepspeed", type=Path, help="DeepSpeed JSON config; requires DeepSpeed in this Python environment.")
     parser.add_argument("--epochs", type=float, default=1.0)
     parser.add_argument("--max-steps", type=int, default=-1, help="Positive value overrides --epochs.")
@@ -108,18 +111,26 @@ def resolve_model_path(model: str, local_files_only: bool) -> str:
     return str(Path(config_path).parent)
 
 
-def resolve_training_template(tokenizer, path: Path) -> str:
-    """Use TRL's supported training patch without changing the inference file.
+def resolve_training_template(tokenizer, path: Path | None = None) -> str:
+    """Resolve the tokenizer's template, optionally overridden by a local file.
 
-    The provided qwen.jinja matches TRL's Qwen3.5 thinking template. Its training
-    variant retains reasoning in earlier assistant turns and marks assistant
-    bodies (reasoning, answer, and end-of-turn) for loss. Unsupported templates
-    fail explicitly instead of silently falling back to full-sequence loss.
-    The tokenizer keeps the inference template for checkpoint serialization.
+    No separate Jinja file is required when the tokenizer supplies a template.
+    A requested file is read strictly: missing/empty overrides never fall back
+    to the native template. TRL patches supported Qwen templates to preserve
+    earlier reasoning and mark assistant bodies for loss; unsupported templates
+    fail rather than silently switching to full-sequence loss. The tokenizer
+    keeps the selected inference template for checkpoint serialization; the
+    training variant is returned separately. Source files are never modified.
     """
     from trl.chat_template_utils import get_training_chat_template
 
-    tokenizer.chat_template = path.read_text(encoding="utf-8")
+    if path is not None:
+        tokenizer.chat_template = path.read_text(encoding="utf-8")
+    if not isinstance(tokenizer.chat_template, str) or not tokenizer.chat_template.strip():
+        raise ValueError(
+            "Expected a single nonempty tokenizer chat template. "
+            "Use --chat-template PATH to supply a model-compatible Jinja template."
+        )
     return get_training_chat_template(processing_class=tokenizer) or tokenizer.chat_template
 
 

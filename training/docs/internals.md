@@ -79,7 +79,7 @@
 {"role": "assistant", "content": "答案", "reasoning_content": "推理過程"}
 ```
 
-原因是目前 `qwen.jinja` 讀取 `reasoning_content`，不會讀 `reasoning`。這個 adapter 不修改 canonical schema，也不重新儲存／覆寫原始 Dataset；Hugging Face 在正式 preprocessing 時仍可能建立衍生 cache 檔案。
+原因是目前 Qwen template 讀取 `reasoning_content`，不會讀 `reasoning`。這個 adapter 不修改 canonical schema，也不重新儲存／覆寫原始 Dataset；Hugging Face 在正式 preprocessing 時仍可能建立衍生 cache 檔案。
 
 當 reasoning 是 `None` 或缺少時，adapter 給 Qwen 空字串，所以 retention 訊息會渲染成：
 
@@ -95,7 +95,9 @@
 
 ### 為什麼不用原始 template 直接訓練？
 
-提供的 Qwen inference template 會省略較早 assistant 輪次的 reasoning，而且沒有標示 assistant loss 範圍的 Jinja `generation` markers。
+預設使用 `AutoTokenizer.from_pretrained()` 載入的 chat template，不依賴 workspace 的 `qwen.jinja`。只有顯式指定 `--chat-template` 時，才讀取檔案覆蓋 tokenizer 的 template；指定檔案缺失或空白時會報錯，不會靜默退回原本的版本。
+
+目前使用的 Qwen inference template 會省略較早 assistant 輪次的 reasoning，而且沒有標示 assistant loss 範圍的 Jinja `generation` markers。
 
 `resolve_training_template()` 使用 TRL 的 `get_training_chat_template()` 取得相容版本，供預覽使用。建立 `SFTTrainer` 時，TRL 也會因 `assistant_only_loss=True` 對相同的 inference template 套用對應 training template。它會：
 
@@ -103,9 +105,9 @@
 - 將每輪 assistant 的 thinking 區塊、答案及 `<|im_end|>` 納入 loss。
 - 將 user/system 訊息及 assistant role header 排除於 loss；這些 token 仍可作為模型輸入 context。
 
-原始 `qwen.jinja` 不會被改寫，tokenizer 儲存的仍是 inference template。實際 training template 另存為 `training_chat_template.jinja`，方便檢查。
+來源 template 檔案不會被改寫，tokenizer 儲存的仍是選定的 inference template（模型自帶的版本，或你指定的覆蓋版本）。實際 training template 另存為 `training_chat_template.jinja`，方便檢查；若選定的 template 本身已適合訓練，則直接沿用。
 
-這依賴目前安裝的 TRL 對該 template 的支援；不支援時會明確報錯。更換模型時，除了 `MODEL`，也要確認 `CHAT_TEMPLATE`、special tokens 與模型匹配；本腳本不是任意模型都能直接套用的通用入口。
+這依賴目前安裝的 TRL 對該 template 的支援；缺少、空白或不支援時會明確報錯。程式目前要求單一 template 字串；若 tokenizer 提供多個具名 template，請透過 `--chat-template` 明確指定所需內容。更換模型時，預設 template 會隨 tokenizer 切換；若曾指定 `CHAT_TEMPLATE`，則要自行清除或更新，並確認 special tokens 與模型匹配。本腳本仍保留 Qwen 的 reasoning adapter 與 EOS 設定，不是任意模型都能直接套用的通用入口。
 
 <a id="limits"></a>
 

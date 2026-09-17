@@ -14,7 +14,7 @@
 
 1. **Queue/resource 規則**：partition、account、必要的 QoS／constraint。`--gres=gpu:8` 只要求 GPU 數量，不能保證拿到 H100；必須由站台提供的 partition、constraint 或 typed GRES 選到正確卡型。若使用 typed GRES，要依站台實際名稱調整，不能猜測。
 2. **Python/CUDA 環境**：必要時在 `.sbatch` 標示的位置加入該 cluster 的 `module load`／環境啟用；目前不包含 container launcher。腳本不會自動安裝依賴或猜 module 名稱。
-3. **共享路徑**：compute node 需能讀取 workspace、模型、tokenizer、`qwen.jinja`、Dataset，並能寫入資料 cache 與輸出目錄。
+3. **共享路徑**：compute node 需能讀取 workspace、模型、tokenizer 與 Dataset，並能寫入資料 cache 與輸出目錄。Template 預設隨 tokenizer 載入；只有指定 `CHAT_TEMPLATE`／`--chat-template` 時才需額外準備該 Jinja 檔案。
 4. **資源與儲存空間**：8 GPU 的 full fine-tuning、optimizer checkpoints 與 `final/` 都需要實測容量與寫入時間；本文件列出的 CPU/RAM/time 是可調的起始值，不是已驗證容量保證。
 
 先完成 [Quickstart 的環境準備](quickstart.md#setup)，再於 server 的訓練環境安裝 DeepSpeed（下例不會修改 `sm-dp/pyproject.toml`）：

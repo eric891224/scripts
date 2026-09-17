@@ -15,12 +15,12 @@ import pytest
 from datasets import Dataset, DatasetDict
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers
 from transformers import PreTrainedTokenizerFast
+from trl.chat_template_utils import qwen3_5_think_chat_template
 
 TRAINING_DIR = Path(__file__).resolve().parents[1]
 MODULE_SPEC = importlib.util.spec_from_file_location("training", TRAINING_DIR / "training.py")
 training = importlib.util.module_from_spec(MODULE_SPEC)
 MODULE_SPEC.loader.exec_module(training)
-TEMPLATE_PATH = TRAINING_DIR.parents[1] / "qwen.jinja"
 
 
 @pytest.fixture
@@ -51,6 +51,7 @@ def tokenizer():
         eos_token="<|im_end|>",
         pad_token="<|pad|>",
         additional_special_tokens=["<|im_start|>", "<think>", "</think>"],
+        chat_template=qwen3_5_think_chat_template,
     )
 
 
@@ -70,16 +71,16 @@ def test_absent_reasoning_renders_empty_think_block(tokenizer, reasoning):
         {"role": "user", "content": "Hi"},
         {"role": "assistant", "content": "Hello", "reasoning": reasoning},
     ]}
-    template = training.resolve_training_template(tokenizer, TEMPLATE_PATH)
+    template = training.resolve_training_template(tokenizer)
     result = training.preview_sample(tokenizer, sample, template, 256)
     assert "<think>\n\n</think>\n\nHello<|im_end|>" in result["loss_preview"]
     assert "None" not in result["loss_preview"]
 
 
 def test_training_template_preserves_all_reasoning_and_masks_prompts(tokenizer, sample):
-    template = training.resolve_training_template(tokenizer, TEMPLATE_PATH)
+    template = training.resolve_training_template(tokenizer)
     result = training.preview_sample(tokenizer, sample, template, 4096)
-    assert tokenizer.chat_template == TEMPLATE_PATH.read_text()  # inference template unchanged
+    assert tokenizer.chat_template == qwen3_5_think_chat_template  # inference template unchanged
     assert template != tokenizer.chat_template
     for text in ["REASON_ONE", "REASON_TWO", "ANSWER_ONE", "ANSWER_TWO"]:
         assert text in result["loss_preview"]
@@ -91,7 +92,7 @@ def test_training_template_preserves_all_reasoning_and_masks_prompts(tokenizer, 
 
 
 def test_truncation_can_remove_all_loss_tokens(tokenizer, sample):
-    template = training.resolve_training_template(tokenizer, TEMPLATE_PATH)
+    template = training.resolve_training_template(tokenizer)
     result = training.preview_sample(tokenizer, sample, template, 4)
     assert result["truncated"] is True
     assert result["retained_tokens"] == 4
@@ -103,6 +104,52 @@ def test_unsupported_template_fails_explicitly(tokenizer, tmp_path):
     path.write_text("{% for message in messages %}{{ message.content }}{% endfor %}")
     with pytest.raises(ValueError, match="not training-compatible"):
         training.resolve_training_template(tokenizer, path)
+
+
+def test_cli_defaults_to_tokenizer_template():
+    assert training.parse_args([]).chat_template is None
+
+
+@pytest.mark.parametrize("native", [None, ""])
+def test_missing_native_template_has_actionable_error(tokenizer, native):
+    tokenizer.chat_template = native
+    with pytest.raises(ValueError, match="--chat-template"):
+        training.resolve_training_template(tokenizer)
+
+
+def test_local_template_override_is_used(tokenizer, tmp_path):
+    path = tmp_path / "custom template.jinja"
+    path.write_text(qwen3_5_think_chat_template)
+    tokenizer.chat_template = "unsupported native template"
+    template = training.resolve_training_template(tokenizer, path)
+    assert tokenizer.chat_template == qwen3_5_think_chat_template
+    assert template != tokenizer.chat_template
+
+
+def test_missing_local_template_override_is_not_ignored(tokenizer, tmp_path):
+    with pytest.raises(FileNotFoundError):
+        training.resolve_training_template(tokenizer, tmp_path / "missing.jinja")
+
+
+@pytest.mark.parametrize("contents", ["", " \n\t"])
+def test_empty_override_does_not_fall_back_to_native_template(tokenizer, tmp_path, contents):
+    path = tmp_path / "empty.jinja"
+    path.write_text(contents)
+    with pytest.raises(ValueError, match="--chat-template"):
+        training.resolve_training_template(tokenizer, path)
+
+
+def test_unsupported_native_template_fails_explicitly(tokenizer):
+    tokenizer.chat_template = "{% for message in messages %}{{ message.content }}{% endfor %}"
+    with pytest.raises(ValueError, match="not training-compatible"):
+        training.resolve_training_template(tokenizer)
+
+
+def test_already_training_compatible_template_is_kept(tokenizer):
+    template = training.resolve_training_template(tokenizer)
+    tokenizer.chat_template = template
+    assert training.resolve_training_template(tokenizer) == template
+    assert tokenizer.chat_template == template
 
 
 def test_load_saved_dataset_preserves_provenance_and_limits_rows(sample, tmp_path):
@@ -225,7 +272,7 @@ def test_dry_run_never_constructs_trainer(sample, tokenizer, tmp_path, monkeypat
     monkeypatch.setattr(training, "build_training_config", forbidden)
     training.main([
         "--dataset", str(tmp_path / "data"), "--output-dir", str(tmp_path / "output"),
-        "--chat-template", str(TEMPLATE_PATH), "--dry-run",
+        "--dry-run",
         "--deepspeed", str(TRAINING_DIR / "deepspeed_zero2.json"),
     ])
     assert not (tmp_path / "output").exists()
@@ -252,7 +299,7 @@ def test_one_cpu_training_step_and_save(sample, tokenizer, tmp_path, monkeypatch
     output = tmp_path / "output"
     training.main([
         "--model", str(tmp_path), "--dataset", str(tmp_path / "data"),
-        "--output-dir", str(output), "--chat-template", str(TEMPLATE_PATH),
+        "--output-dir", str(output),
         "--max-steps", "1", "--max-length", "256", "--dtype", "fp32",
         "--gradient-accumulation-steps", "1", "--logging-steps", "1",
         "--save-steps", "1", "--no-gradient-checkpointing", "--local-files-only",
@@ -268,4 +315,4 @@ def test_one_cpu_training_step_and_save(sample, tokenizer, tmp_path, monkeypatch
     metadata = json.loads((output / "run_arguments.json").read_text())
     assert metadata["world_size"] == 1
     assert metadata["global_batch_size"] == 1
-    assert (output / "final/chat_template.jinja").read_text() == TEMPLATE_PATH.read_text()
+    assert (output / "final/chat_template.jinja").read_text() == qwen3_5_think_chat_template
