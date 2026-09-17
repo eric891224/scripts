@@ -14,7 +14,6 @@
 
 | 檔案 | 負責的事情 |
 | --- | --- |
-| [data_preparation.py](../data_preparation.py) | 載入原始資料、轉成 canonical schema、按固定配額混合、儲存 Dataset 與 mixture recipe。 |
 | [training.py](../training.py) | 載入已儲存的 Dataset、轉接 reasoning 欄位、預覽 loss tokens、執行 SFT 並儲存結果。 |
 | [run_training.sh](../run_training.sh) | 把環境變數轉成 Python CLI 參數；不負責轉換或混合資料。 |
 | [submit_training.sbatch](../submit_training.sbatch) | 申請單節點 8 GPU，設定 job 輸出位置，啟動一個 Slurm task。 |
@@ -25,8 +24,7 @@
 完整流程：
 
 ```text
-原始 domain / retention datasets
-  → data_preparation.py：convert → fixed-quota mix → save_to_disk
+本機預處理後上傳的 saved Dataset
   → training.py：load_from_disk → reasoning adapter → chat template
   → TRL：tokenize → assistant loss mask → truncate → train
   → checkpoints、final model/tokenizer、metrics
@@ -126,7 +124,8 @@
 在 workspace 根目錄執行：
 
 ```bash
-sm-dp/.venv/bin/python -m pytest scripts/training/tests -q
+uv run --project scripts/training/envs/tp1 --locked --with pytest \
+  python -m pytest scripts/training/tests -q
 bash -n scripts/training/run_training.sh scripts/training/submit_training.sbatch
 ```
 

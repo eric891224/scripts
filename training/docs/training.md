@@ -89,7 +89,7 @@ OUTPUT_DIR/
 
 實際模型檔名／分片方式由 Transformers 決定。還沒到儲存間隔就結束的 run，不一定有中途 checkpoint，但正常完成仍會寫出 `final/`。Trainer 也可能另外產生其他標準 metadata 檔案。
 
-`run_arguments.json` 不是完整實驗封存：不會複製 dataset、mixture recipe、原始碼或依賴 lockfile，也不包含所有未顯式設定的 Trainer 預設值。需要重現實驗時，請另外保留 dataset 版本、recipe、模型 revision、程式 commit 與 `sm-dp/uv.lock`。
+需要重現實驗時，請另外保留上傳的 dataset／recipe、模型 revision、程式 commit、`envs/tp1/uv.lock` 與額外安裝的 DeepSpeed 版本；`run_arguments.json` 不會封存這些內容。
 
 <a id="parameters"></a>
 
@@ -106,7 +106,7 @@ bash scripts/training/run_training.sh --help
 
 | 環境變數 | Python CLI | 預設值／用途 |
 | --- | --- | --- |
-| `PYTHON_BIN` | 無，僅供 launcher 使用 | `<workspace>/sm-dp/.venv/bin/python`。 |
+| `PYTHON_BIN` | 無，僅供 launcher 使用 | `<workspace>/scripts/training/envs/tp1/.venv/bin/python`。 |
 | `MODEL` | `--model` | `Qwen/Qwen3.5-9B`；也接受本地模型目錄。 |
 | `DATASET` | `--dataset` | `<workspace>/dataset/mixed/siliconmind-retention-v1`。 |
 | `OUTPUT_DIR` | `--output-dir` | `<workspace>/outputs/qwen-domain-retention`。 |

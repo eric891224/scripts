@@ -10,7 +10,13 @@
 
 ## 1. 登入並啟用
 
-在訓練機器上先執行 `wandb login`，並確認 launcher 使用的 Python 環境已安裝 `wandb`。API key 不要放進 script、README 或版本控制。
+TP1 環境已列入 W&B 依賴。安裝環境後，在訓練機器登入：
+
+```bash
+scripts/training/envs/tp1/.venv/bin/wandb login
+```
+
+API key 不要放進 script、README 或版本控制。
 
 以下直接執行範例會啟動訓練；Slurm 使用者應將 `REPORT_TO=wandb` 等環境變數加在 [sbatch 提交指令](slurm.md#training) 前，不要直接在 login node 執行。
 

@@ -10,42 +10,32 @@
 
 ## 1. 準備環境與資料
 
-下方指令都假設目前位於 workspace 根目錄，例如 `/home/siliconmind/cl`：
+先在本機完成資料轉換與混合，server 只負責訓練，不需安裝或上傳 `sm-dp`。目錄配置：
 
 ```text
 workspace/
-  sm-dp/                     # pyproject.toml、uv.lock、.venv/
-  scripts/training/
-  dataset/mixed/siliconmind-retention-v1/
+  scripts/training/                       # 包含 envs/tp1/ 訓練環境
+  dataset/mixed/siliconmind-retention-v1/   # 上傳的完整 saved Dataset
 ```
 
-使用 Python 3.12 以上，以及 `sm-dp` 的依賴環境。若尚未建立環境，可在根目錄執行：
+在 server 建立獨立訓練環境：
 
 ```bash
-uv sync --project sm-dp --locked
+uv sync --project scripts/training/envs/tp1 --locked
 ```
 
-Launcher 預設使用 `sm-dp/.venv/bin/python`。Server 若使用另一個環境，可以設定 `PYTHON_BIN=/path/to/python`。GPU 驅動、PyTorch/CUDA 相容性及 BF16 支援仍需在 server 確認；建立 Python 環境不代表 GPU 已配置完成。
+Launcher 預設使用 `scripts/training/envs/tp1/.venv/bin/python`；其他環境可用 `PYTHON_BIN` 覆蓋。DeepSpeed 安裝與個人設定見 [TP1 環境說明](../envs/tp1/README.md)。
 
 Chat template 預設直接使用模型 tokenizer 附帶的版本，不需要額外放置 `qwen.jinja`。只有需要自訂時才設定 `CHAT_TEMPLATE=/path/to/custom.jinja` 或 `--chat-template /path/to/custom.jinja`。缺少 template 或 TRL 不支援時會明確報錯，不會自動改用其他模型的格式。
 
-訓練輸入必須是由 Hugging Face `Dataset.save_to_disk()` 儲存的**單一 Dataset**，包含 canonical `messages`。不是 JSONL 路徑、Hub dataset ID 或 `DatasetDict`。程式只檢查基本結構，不能取代前面的 converter/schema validation。
-
-如果已經有混合資料，就不必重跑 data preparation。若要重新產生，先檢查 `data_preparation.py` 的資料路徑及輸出位置，再執行：
-
-```bash
-PYTHONPATH=sm-dp/src sm-dp/.venv/bin/python scripts/training/data_preparation.py
-```
-
-注意：data preparation 目前的 `DATASET_ROOT` 寫死為 `/home/siliconmind/cl/dataset`，尚未提供 CLI；換 server 時要調整。重新產生前請選好輸出位置，避免覆寫先前 recipe 或混用資料版本。
-
-目前 preparation script 的配方是 45,000 筆：36,000 筆 spec2rtl、4,500 筆 everyday-conversations、4,500 筆 metamathqa。這是 **80% domain + 20% retention 的樣本比例**，不是 token 比例。training script 不會重新混合或重新保證這個比例。
+上傳 `Dataset.save_to_disk()` 產生的完整目錄（包括 Arrow shards 與 metadata），不是單一 JSONL、Hub dataset ID 或 `DatasetDict`。Dataset 需包含 canonical `messages`；資料驗證、配額與混合在本機完成。Server 仍會套用 chat template、tokenize 與建立 loss mask。
 
 <a id="dry-run"></a>
 
 ## 2. 先做 dry-run
 
 ```bash
+DATASET=/path/to/uploaded-dataset \
 bash scripts/training/run_training.sh --dry-run --preview-samples 3
 ```
 

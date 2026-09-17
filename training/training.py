@@ -1,4 +1,4 @@
-"""Full-parameter, text-only Qwen SFT on a saved sm-dp Dataset.
+"""Full-parameter, text-only Qwen SFT on a preprocessed Hugging Face Dataset.
 
 Run through run_training.sh (or use --help). --dry-run loads only the tokenizer
 and previews a few examples; it does not load model weights or start training.
@@ -66,7 +66,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def adapt_sample(sample: dict) -> dict:
     """Copy canonical messages and expose assistant reasoning to Qwen's template.
 
-    The saved sm-dp schema and input dictionaries are not mutated. None becomes
+    The saved canonical schema and input dictionaries are not mutated. None becomes
     an empty reasoning_content only in this model-facing view: Qwen then emits
     an empty <think> block, rather than inventing reasoning for retention data.
     Tool/system/user messages are not given an assistant reasoning field.

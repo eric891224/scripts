@@ -1,6 +1,7 @@
 """Offline tests: no downloaded models, GPU, or real training artifact required.
 
-Run: sm-dp/.venv/bin/python -m pytest scripts/training/tests -q
+Run from workspace root:
+uv run --project scripts/training/envs/tp1 --locked --with pytest python -m pytest scripts/training/tests -q
 """
 
 import copy

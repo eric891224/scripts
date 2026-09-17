@@ -34,7 +34,7 @@ fi
 
 # Load the cluster's CUDA/compiler modules or activate its environment HERE,
 # if needed. No module names or container image are assumed by this template.
-export PYTHON_BIN="${PYTHON_BIN:-${WORKSPACE_DIR}/sm-dp/.venv/bin/python}"
+export PYTHON_BIN="${PYTHON_BIN:-${WORKSPACE_DIR}/scripts/training/envs/tp1/.venv/bin/python}"
 export NPROC_PER_NODE=8
 export BATCH_SIZE="${BATCH_SIZE:-1}"
 export GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-2}"

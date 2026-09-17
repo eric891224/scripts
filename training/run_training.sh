@@ -8,7 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
-PYTHON_BIN="${PYTHON_BIN:-${WORKSPACE_DIR}/sm-dp/.venv/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-${SCRIPT_DIR}/envs/tp1/.venv/bin/python}"
 MODEL="${MODEL:-Qwen/Qwen3.5-9B}"
 DATASET="${DATASET:-${WORKSPACE_DIR}/dataset/mixed/siliconmind-retention-v1}"
 OUTPUT_DIR="${OUTPUT_DIR:-${WORKSPACE_DIR}/outputs/qwen-domain-retention}"

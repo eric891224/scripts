@@ -33,7 +33,7 @@ def launcher_env(tmp_path):
         "if sys.argv[1:2] == ['-c']: sys.exit(0)  # simulate GPU/dependency preflight\n"
         "keys = ['OUTPUT_DIR', 'WANDB_NAME', 'CUDA_VISIBLE_DEVICES', 'BATCH_SIZE', "
         "'GRADIENT_ACCUMULATION_STEPS', 'DEEPSPEED_CONFIG', 'NPROC_PER_NODE']\n"
-        "print(json.dumps({'argv': sys.argv[1:], 'env': {k: os.environ.get(k) for k in keys}}))\n"
+        "print(json.dumps({'interpreter': sys.argv[0], 'argv': sys.argv[1:], 'env': {k: os.environ.get(k) for k in keys}}))\n"
     )
     interpreter.chmod(0o755)
     srun = tmp_path / "srun"
@@ -55,6 +55,25 @@ def launcher_env(tmp_path):
 
 def invoke(path, env, cwd, *args):
     return subprocess.run(["bash", str(path), *args], env=env, cwd=cwd, text=True, capture_output=True)
+
+
+@pytest.mark.parametrize("launcher", ["run_training.sh", "submit_training.sbatch"])
+def test_default_python_uses_tp1_without_sm_dp_checkout(launcher_env, tmp_path, launcher):
+    workspace = tmp_path / "server workspace"
+    training_dir = workspace / "scripts/training"
+    python = training_dir / "envs/tp1/.venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text(Path(launcher_env["PYTHON_BIN"]).read_text())
+    python.chmod(0o755)
+    for name in ["run_training.sh", "submit_training.sbatch"]:
+        (training_dir / name).write_text((TRAINING_DIR / name).read_text())
+    env = launcher_env.copy()
+    del env["PYTHON_BIN"]
+    env.update({"SLURM_JOB_ID": "123", "SLURM_SUBMIT_DIR": str(workspace)})
+    result = invoke(training_dir / launcher, env, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["interpreter"] == str(python)
+    assert not (workspace / "sm-dp").exists()
 
 
 def test_torchrun_is_launched_once_with_deepspeed_and_cli_overrides(launcher_env, tmp_path):

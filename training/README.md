@@ -1,6 +1,6 @@
 # Domain + retention SFT
 
-用 `sm-dp` 的混合 Dataset 對 Qwen 做 full fine-tuning。支援單 process，以及單節點 8 × H100 的 Slurm + DeepSpeed ZeRO-2；目前沒有 LoRA 或 evaluation pipeline。
+用已預處理並上傳的 Dataset 對 Qwen 做 full fine-tuning，server 不需要 `sm-dp`。支援單 process，以及單節點 8 × H100 的 Slurm + DeepSpeed ZeRO-2；目前沒有 LoRA 或 evaluation pipeline。
 
 ## 我想做什麼？
 

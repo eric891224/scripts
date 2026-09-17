@@ -17,13 +17,7 @@
 3. **共享路徑**：compute node 需能讀取 workspace、模型、tokenizer 與 Dataset，並能寫入資料 cache 與輸出目錄。Template 預設隨 tokenizer 載入；只有指定 `CHAT_TEMPLATE`／`--chat-template` 時才需額外準備該 Jinja 檔案。
 4. **資源與儲存空間**：8 GPU 的 full fine-tuning、optimizer checkpoints 與 `final/` 都需要實測容量與寫入時間；本文件列出的 CPU/RAM/time 是可調的起始值，不是已驗證容量保證。
 
-先完成 [Quickstart 的環境準備](quickstart.md#setup)，再於 server 的訓練環境安裝 DeepSpeed（下例不會修改 `sm-dp/pyproject.toml`）：
-
-```bash
-uv pip install --python sm-dp/.venv/bin/python deepspeed
-```
-
-如使用 W&B，也需在同一環境安裝 `wandb`。DeepSpeed 的 CUDA/編譯器相容性需依 server 確認；安裝後請保存實際套件版本。額外安裝的套件目前不在 `sm-dp/uv.lock`，再次執行環境同步可能移除它們。
+依 [TP1 環境說明](../envs/tp1/README.md) 建立訓練環境並安裝 DeepSpeed；launcher 預設使用 `envs/tp1/.venv/bin/python`。資料上傳方式見 [Quickstart](quickstart.md#setup)。
 
 腳本執行前會檢查 DeepSpeed 可 import、CUDA 可用、剛好看見 8 張 GPU，並列印 PyTorch/CUDA/DeepSpeed 版本與 GPU 名稱／記憶體。這不代表完整 backward 或 checkpoint 已驗證。
 
@@ -44,7 +38,7 @@ sbatch --partition=YOUR_H100_PARTITION --account=YOUR_ACCOUNT \
 
 這會保持 global batch 16。第一次還包含模型載入、preprocessing，以及可能的 DeepSpeed 編譯；30 分鐘只是起始測試時間，可依站台調整。中途與最後儲存仍是完整模型／訓練狀態，並不因只跑兩步就變成小檔案。
 
-檢查 `slurm-qwen-sft-<job-id>.out`／`.err`：
+檢查 `slurm-<job-name>-<job-id>.out`／`.err`：
 
 - GPU preflight 確認拿到預期的卡。
 - 訓練資訊包含 `World size: 8; global batch size: 16`。
