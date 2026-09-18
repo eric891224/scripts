@@ -11,55 +11,49 @@ import json
 import os
 from pathlib import Path
 
-WORKSPACE = Path(__file__).resolve().parents[2]
+# Fixed MVP recipe: edit here, not in environment variables or shell launchers.
+RECIPE = {
+    "epochs": 1.0, "learning_rate": 2e-5, "batch_size": 1,
+    "gradient_accumulation_steps": 2, "max_length": 4096,
+    "dtype": "bf16", "attn_implementation": "sdpa",
+    "gradient_checkpointing": True, "logging_steps": 10,
+    "save_steps": 250, "save_total_limit": 2, "seed": 42,
+    "dataset_num_proc": 1, "max_steps": -1, "max_train_samples": None,
+    "preview_samples": 3,
+    "deepspeed": Path(__file__).with_name("deepspeed_zero2.json"),
+}
 
 
-def positive_int(value: str) -> int:
-    """Parse a strictly positive CLI integer."""
-    number = int(value)
-    if number <= 0:
-        raise argparse.ArgumentTypeError("must be greater than zero")
-    return number
+def nonempty(value: str) -> str:
+    """Reject empty required inputs instead of silently choosing defaults."""
+    if not value.strip():
+        raise argparse.ArgumentTypeError("must not be empty")
+    return value
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse run settings; defaults are an initial experiment, not a tuned recipe."""
+    """Require run identity; expose only preview, smoke test and resume."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default="Qwen/Qwen3.5-9B")
-    parser.add_argument("--dataset", type=Path, default=WORKSPACE / "dataset/mixed/siliconmind-retention-v1")
-    parser.add_argument("--output-dir", type=Path, default=WORKSPACE / "outputs/qwen-domain-retention")
-    parser.add_argument(
-        "--chat-template", type=Path,
-        help="Optional Jinja file override; defaults to the tokenizer's own chat template.",
-    )
-    parser.add_argument("--deepspeed", type=Path, help="DeepSpeed JSON config; requires DeepSpeed in this Python environment.")
-    parser.add_argument("--epochs", type=float, default=1.0)
-    parser.add_argument("--max-steps", type=int, default=-1, help="Positive value overrides --epochs.")
-    parser.add_argument("--learning-rate", type=float, default=2e-5)
-    parser.add_argument("--batch-size", type=positive_int, default=1)
-    parser.add_argument("--gradient-accumulation-steps", type=positive_int, default=16)
-    parser.add_argument("--max-length", type=positive_int, default=4096)
-    parser.add_argument("--dtype", choices=["bf16", "fp16", "fp32"], default="bf16")
-    parser.add_argument("--attn-implementation", default="sdpa")
-    parser.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--logging-steps", type=positive_int, default=10)
-    parser.add_argument("--save-steps", type=positive_int, default=250)
-    parser.add_argument("--save-total-limit", type=positive_int, default=2)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--dataset-num-proc", type=positive_int, default=1)
-    parser.add_argument("--max-train-samples", type=positive_int, help="Use the first N rows for a smoke test; changes mixture ratios.")
+    parser.add_argument("--model", required=True, type=nonempty)
+    parser.add_argument("--dataset", required=True, type=nonempty)
+    parser.add_argument("--output-dir", required=True, type=nonempty)
+    parser.add_argument("--report-to", required=True, choices=["none", "wandb"])
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--smoke", action="store_true", help="Train two steps on the first 32 rows; save each step.")
     parser.add_argument("--resume-from-checkpoint", type=Path)
-    parser.add_argument("--report-to", choices=["none", "tensorboard", "wandb"], default="none")
-    parser.add_argument("--local-files-only", action="store_true", help="Do not download tokenizer or model files.")
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--preview-samples", type=positive_int, default=3)
     args = parser.parse_args(argv)
-    if args.epochs <= 0 or args.learning_rate <= 0:
-        parser.error("--epochs and --learning-rate must be positive")
-    if args.max_steps != -1 and args.max_steps <= 0:
-        parser.error("--max-steps must be -1 or a positive integer")
-    if args.deepspeed is not None and not args.deepspeed.is_file():
-        parser.error("--deepspeed must point to an existing JSON config file")
+    args.dataset, args.output_dir = Path(args.dataset), Path(args.output_dir)
+    if args.report_to == "wandb":
+        for key in ("WANDB_ENTITY", "WANDB_PROJECT", "WANDB_NAME"):
+            if not os.environ.get(key, "").strip():
+                parser.error(f"{key} is required when --report-to=wandb")
+    for key, value in RECIPE.items():
+        setattr(args, key, value)
+    if args.smoke:
+        args.max_steps, args.max_train_samples = 2, 32
+        args.logging_steps, args.save_steps = 1, 1
+    args.local_files_only = os.environ.get("HF_HUB_OFFLINE", "").upper() in {"1", "TRUE", "YES", "ON"}
     return args
 
 
@@ -111,12 +105,11 @@ def resolve_model_path(model: str, local_files_only: bool) -> str:
     return str(Path(config_path).parent)
 
 
-def resolve_training_template(tokenizer, path: Path | None = None) -> str:
-    """Resolve the tokenizer's template, optionally overridden by a local file.
+def resolve_training_template(tokenizer) -> str:
+    """Use the tokenizer's template and let TRL add assistant-loss masking.
 
     No separate Jinja file is required when the tokenizer supplies a template.
-    A requested file is read strictly: missing/empty overrides never fall back
-    to the native template. TRL patches supported Qwen templates to preserve
+    TRL patches supported Qwen templates to preserve
     earlier reasoning and mark assistant bodies for loss; unsupported templates
     fail rather than silently switching to full-sequence loss. The tokenizer
     keeps the selected inference template for checkpoint serialization; the
@@ -124,12 +117,10 @@ def resolve_training_template(tokenizer, path: Path | None = None) -> str:
     """
     from trl.chat_template_utils import get_training_chat_template
 
-    if path is not None:
-        tokenizer.chat_template = path.read_text(encoding="utf-8")
     if not isinstance(tokenizer.chat_template, str) or not tokenizer.chat_template.strip():
         raise ValueError(
             "Expected a single nonempty tokenizer chat template. "
-            "Use --chat-template PATH to supply a model-compatible Jinja template."
+            "Choose a model with a supported tokenizer template."
         )
     return get_training_chat_template(processing_class=tokenizer) or tokenizer.chat_template
 
@@ -248,11 +239,12 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     from transformers import AutoTokenizer, set_seed
 
+    os.environ["WANDB_LOG_MODEL"] = "false"  # MVP logs metrics, never uploads checkpoints.
     set_seed(args.seed)
     dataset = load_training_dataset(args.dataset, args.max_train_samples)
     model_path = resolve_model_path(args.model, args.local_files_only)
     tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=args.local_files_only)
-    template = resolve_training_template(tokenizer, args.chat_template)
+    template = resolve_training_template(tokenizer)
     if int(os.environ.get("RANK", "0")) == 0:
         print(f"Dataset: {args.dataset} ({len(dataset):,} rows)")
         print("Full fine-tuning; assistant-only loss; reasoning + answer; packing disabled.")
@@ -286,7 +278,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     disable_training_cache(trainer.model)
     if not len(trainer.train_dataset):
-        raise ValueError("No trainable samples remain after truncation; increase --max-length.")
+        raise ValueError("No trainable samples remain; review data or RECIPE max_length.")
     if trainer.is_world_process_zero():
         global_batch = config.world_size * args.batch_size * args.gradient_accumulation_steps
         print(f"Prepared rows: {len(trainer.train_dataset):,}/{len(dataset):,}. Truncation can change mixture ratios.")

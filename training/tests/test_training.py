@@ -7,10 +7,7 @@ uv run --project scripts/training/envs/tp1 --locked --with pytest python -m pyte
 import copy
 import importlib.util
 import json
-import os
 from pathlib import Path
-import subprocess
-import sys
 
 import pytest
 from datasets import Dataset, DatasetDict
@@ -22,6 +19,11 @@ TRAINING_DIR = Path(__file__).resolve().parents[1]
 MODULE_SPEC = importlib.util.spec_from_file_location("training", TRAINING_DIR / "training.py")
 training = importlib.util.module_from_spec(MODULE_SPEC)
 MODULE_SPEC.loader.exec_module(training)
+
+
+def parse(args=()):
+    return training.parse_args(["--model", "test-model", "--dataset", "/test/data",
+                                "--output-dir", "/test/output", "--report-to", "none", *args])
 
 
 @pytest.fixture
@@ -100,44 +102,11 @@ def test_truncation_can_remove_all_loss_tokens(tokenizer, sample):
     assert result["loss_tokens"] == 0
 
 
-def test_unsupported_template_fails_explicitly(tokenizer, tmp_path):
-    path = tmp_path / "unsupported.jinja"
-    path.write_text("{% for message in messages %}{{ message.content }}{% endfor %}")
-    with pytest.raises(ValueError, match="not training-compatible"):
-        training.resolve_training_template(tokenizer, path)
-
-
-def test_cli_defaults_to_tokenizer_template():
-    assert training.parse_args([]).chat_template is None
-
-
 @pytest.mark.parametrize("native", [None, ""])
 def test_missing_native_template_has_actionable_error(tokenizer, native):
     tokenizer.chat_template = native
-    with pytest.raises(ValueError, match="--chat-template"):
+    with pytest.raises(ValueError, match="supported tokenizer"):
         training.resolve_training_template(tokenizer)
-
-
-def test_local_template_override_is_used(tokenizer, tmp_path):
-    path = tmp_path / "custom template.jinja"
-    path.write_text(qwen3_5_think_chat_template)
-    tokenizer.chat_template = "unsupported native template"
-    template = training.resolve_training_template(tokenizer, path)
-    assert tokenizer.chat_template == qwen3_5_think_chat_template
-    assert template != tokenizer.chat_template
-
-
-def test_missing_local_template_override_is_not_ignored(tokenizer, tmp_path):
-    with pytest.raises(FileNotFoundError):
-        training.resolve_training_template(tokenizer, tmp_path / "missing.jinja")
-
-
-@pytest.mark.parametrize("contents", ["", " \n\t"])
-def test_empty_override_does_not_fall_back_to_native_template(tokenizer, tmp_path, contents):
-    path = tmp_path / "empty.jinja"
-    path.write_text(contents)
-    with pytest.raises(ValueError, match="--chat-template"):
-        training.resolve_training_template(tokenizer, path)
 
 
 def test_unsupported_native_template_fails_explicitly(tokenizer):
@@ -186,7 +155,7 @@ def test_offline_model_resolution_uses_only_cached_snapshot(monkeypatch, tmp_pat
 @pytest.mark.parametrize("option,value", [("--batch-size", "0"), ("--max-length", "-2"), ("--max-steps", "0")])
 def test_invalid_cli_values_are_rejected(option, value):
     with pytest.raises(SystemExit):
-        training.parse_args([option, value])
+        parse([option, value])
 
 
 @pytest.mark.parametrize("nested", [False, True])
@@ -223,10 +192,10 @@ def test_qwen35_loads_with_training_kwargs_without_constructor_cache_arg(tmp_pat
     )
     transformers.Qwen3_5ForConditionalGeneration(config).save_pretrained(tmp_path)
     monkeypatch.setattr(trl, "SFTConfig", lambda **kwargs: SimpleNamespace(**kwargs))
-    args = training.parse_args([
-        "--dtype", "fp32", "--local-files-only",
-        "--gradient-checkpointing" if checkpointing else "--no-gradient-checkpointing",
-    ])
+    monkeypatch.setitem(training.RECIPE, "dtype", "fp32")
+    monkeypatch.setitem(training.RECIPE, "gradient_checkpointing", checkpointing)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    args = parse()
     settings = training.build_training_config(args)
     # No loader mocking: the previous use_cache kwarg must fail here.
     model = create_model_from_path(str(tmp_path), **settings.model_init_kwargs)
@@ -238,7 +207,7 @@ def test_qwen35_loads_with_training_kwargs_without_constructor_cache_arg(tmp_pat
 
 
 def test_nonempty_output_requires_explicit_resume(tmp_path):
-    args = training.parse_args(["--output-dir", str(tmp_path)])
+    args = parse(["--output-dir", str(tmp_path)])
     (tmp_path / "existing.txt").write_text("do not overwrite")
     with pytest.raises(ValueError, match="nonempty"):
         training.check_output_directory(args)
@@ -248,77 +217,6 @@ def test_nonempty_output_requires_explicit_resume(tmp_path):
     args.resume_from_checkpoint.mkdir()
     (args.resume_from_checkpoint / "trainer_state.json").write_text("{}")
     training.check_output_directory(args)
-
-
-@pytest.fixture
-def single_process_env(tmp_path):
-    """Use the public template, never a developer's private .env.sh."""
-    template = (TRAINING_DIR / "envs/tp1/.env.example.sh").read_text()
-    keys = {line.split("=", 1)[0].removeprefix("export ")
-            for line in template.splitlines() if line.startswith("export ")}
-    env = {key: value for key, value in os.environ.items()
-           if key not in keys and not key.startswith(("SLURM_", "WANDB_"))
-           and key not in {"RANK", "LOCAL_RANK", "WORLD_SIZE"}}
-    config = tmp_path / "training config.sh"
-    config.write_text(template)
-    return env | {"TRAINING_ENV_FILE": str(config), "NPROC_PER_NODE": "1", "DEEPSPEED_CONFIG": ""}
-
-
-def test_launcher_preserves_spaces_and_cli_overrides(tmp_path, single_process_env):
-    # Capture argv as JSON using a stand-in interpreter; no training is started.
-    interpreter = tmp_path / "capture args"
-    interpreter.write_text(f"#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
-    interpreter.chmod(0o755)
-    env = single_process_env | {"PYTHON_BIN": str(interpreter), "MODEL": "model with spaces", "MAX_STEPS": "7"}
-    result = subprocess.run(
-        ["bash", str(TRAINING_DIR / "run_training.sh"), "--max-steps", "2", "--dry-run"],
-        cwd=tmp_path, env=env, check=True, capture_output=True, text=True,
-    )
-    forwarded = json.loads(result.stdout)
-    assert forwarded[0] == str(TRAINING_DIR / "training.py")
-    args = training.parse_args(forwarded[1:])
-    assert args.model == "model with spaces"
-    assert args.max_steps == 2
-    assert args.dry_run
-
-
-@pytest.mark.parametrize("overrides,extra_args,expected_report", [
-    ({}, [], "none"),
-    ({"REPORT_TO": "wandb"}, [], "wandb"),
-    ({
-        "REPORT_TO": "wandb",
-        "WANDB_ENTITY": "another-team",
-        "WANDB_PROJECT": "another-project",
-        "WANDB_NAME": "run with spaces",
-        "WANDB_LOG_MODEL": "checkpoint",
-    }, [], "wandb"),
-    ({"REPORT_TO": "wandb"}, ["--report-to", "none"], "none"),
-])
-def test_launcher_exports_wandb_settings(tmp_path, single_process_env, overrides, extra_args, expected_report):
-    """Inspect only selected settings in a stand-in process; never contact W&B."""
-    defaults = {
-        "WANDB_ENTITY": "s96006730-siliconmind",
-        "WANDB_PROJECT": "sm-dp-training",
-        "WANDB_NAME": "qwen-zero2-local",
-        "WANDB_LOG_MODEL": "false",
-    }
-    interpreter = tmp_path / "capture wandb settings"
-    interpreter.write_text(
-        f"#!{sys.executable}\nimport json, os, sys\n"
-        f"settings = {{key: os.environ.get(key) for key in {list(defaults)!r}}}\n"
-        "print(json.dumps({'argv': sys.argv[2:], 'settings': settings}))\n"
-    )
-    interpreter.chmod(0o755)
-    env = single_process_env.copy()
-    env.update(overrides)
-    env["PYTHON_BIN"] = str(interpreter)
-    result = subprocess.run(
-        ["bash", str(TRAINING_DIR / "run_training.sh"), *extra_args],
-        cwd=tmp_path, env=env, check=True, capture_output=True, text=True,
-    )
-    captured = json.loads(result.stdout)
-    assert captured["settings"] == {key: overrides.get(key, value) for key, value in defaults.items()}
-    assert training.parse_args(captured["argv"]).report_to == expected_report
 
 
 def test_dry_run_never_constructs_trainer(sample, tokenizer, tmp_path, monkeypatch):
@@ -334,14 +232,14 @@ def test_dry_run_never_constructs_trainer(sample, tokenizer, tmp_path, monkeypat
     monkeypatch.setattr(trl, "SFTTrainer", forbidden)
     monkeypatch.setattr(training, "build_training_config", forbidden)
     training.main([
-        "--dataset", str(tmp_path / "data"), "--output-dir", str(tmp_path / "output"),
-        "--dry-run",
-        "--deepspeed", str(TRAINING_DIR / "deepspeed_zero2.json"),
+        "--model", str(tmp_path), "--dataset", str(tmp_path / "data"),
+        "--output-dir", str(tmp_path / "output"), "--report-to", "none", "--dry-run",
     ])
     assert not (tmp_path / "output").exists()
 
 
-def test_one_cpu_training_step_and_save(sample, tokenizer, tmp_path, monkeypatch):
+@pytest.mark.parametrize("smoke", [False, True])
+def test_cpu_training_save_and_smoke_resume(sample, tokenizer, tmp_path, monkeypatch, smoke):
     """Exercise real TRL preprocessing, labels, backward pass, and main's saves."""
     import torch
     import transformers
@@ -360,23 +258,71 @@ def test_one_cpu_training_step_and_save(sample, tokenizer, tmp_path, monkeypatch
     real_config = trl.SFTConfig
     monkeypatch.setattr(trl, "SFTConfig", lambda **kw: real_config(use_cpu=True, **kw))
     output = tmp_path / "output"
-    training.main([
+    # Test-only tiny CPU recipe; the public API remains fixed to BF16/ZeRO-2.
+    for key, value in dict(dtype="fp32", deepspeed=None, max_steps=1, max_length=256,
+                           gradient_accumulation_steps=1, logging_steps=1,
+                           save_steps=1, gradient_checkpointing=False).items():
+        monkeypatch.setitem(training.RECIPE, key, value)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    argv = [
         "--model", str(tmp_path), "--dataset", str(tmp_path / "data"),
-        "--output-dir", str(output),
-        "--max-steps", "1", "--max-length", "256", "--dtype", "fp32",
-        "--gradient-accumulation-steps", "1", "--logging-steps", "1",
-        "--save-steps", "1", "--no-gradient-checkpointing", "--local-files-only",
-    ])
+        "--output-dir", str(output), "--report-to", "none",
+        *(["--smoke"] if smoke else []),
+    ]
+    training.main(argv)
     assert (output / "final/model.safetensors").exists()
     assert model.config.use_cache is False
     assert (output / "final/tokenizer.json").exists()
     assert (output / "checkpoint-1/trainer_state.json").exists()
     assert (output / "training_chat_template.jinja").exists()
     state = json.loads((output / "trainer_state.json").read_text())
-    assert state["global_step"] == 1
+    assert state["global_step"] == (2 if smoke else 1)
     metrics = json.loads((output / "train_results.json").read_text())
     assert metrics["train_loss"] > 0
     metadata = json.loads((output / "run_arguments.json").read_text())
     assert metadata["world_size"] == 1
     assert metadata["global_batch_size"] == 1
     assert (output / "final/chat_template.jinja").read_text() == qwen3_5_think_chat_template
+    if smoke:
+        original_arguments = (output / "run_arguments.json").read_text()
+        training.main([*argv, "--resume-from-checkpoint", str(output / "checkpoint-1")])
+        assert json.loads((output / "trainer_state.json").read_text())["global_step"] == 2
+        assert (output / "resume_arguments.json").exists()
+        assert (output / "run_arguments.json").read_text() == original_arguments
+
+
+@pytest.mark.parametrize("option", ["--model", "--dataset", "--output-dir", "--report-to"])
+@pytest.mark.parametrize("missing", [True, False])
+def test_required_inputs_have_no_fallback(option, missing):
+    argv = ["--model", "model", "--dataset", "/data", "--output-dir", "/output", "--report-to", "none"]
+    index = argv.index(option)
+    if missing:
+        del argv[index:index + 2]
+    else:
+        argv[index + 1] = ""
+    with pytest.raises(SystemExit):
+        training.parse_args(argv)
+
+
+def test_fixed_recipe_ignores_stale_training_environment(monkeypatch):
+    for key in ["EPOCHS", "LEARNING_RATE", "BATCH_SIZE", "MAX_STEPS", "MAX_TRAIN_SAMPLES", "DTYPE"]:
+        monkeypatch.setenv(key, "999")
+    args = parse()
+    assert args.epochs == 1 and args.learning_rate == 2e-5
+    assert args.batch_size == 1 and args.gradient_accumulation_steps == 2
+    assert args.dtype == "bf16" and args.max_steps == -1
+    assert args.max_train_samples is None
+    smoke = parse(["--smoke"])
+    assert (smoke.max_steps, smoke.max_train_samples, smoke.logging_steps, smoke.save_steps) == (2, 32, 1, 1)
+    with pytest.raises(SystemExit):
+        parse(["--smoke", "--dry-run"])
+
+
+@pytest.mark.parametrize("key", ["WANDB_ENTITY", "WANDB_PROJECT", "WANDB_NAME"])
+def test_wandb_identity_required_only_when_enabled(monkeypatch, key):
+    for name in ["WANDB_ENTITY", "WANDB_PROJECT", "WANDB_NAME"]:
+        monkeypatch.setenv(name, "test")
+    monkeypatch.delenv(key)
+    assert parse().report_to == "none"
+    with pytest.raises(SystemExit):
+        parse(["--report-to", "wandb"])

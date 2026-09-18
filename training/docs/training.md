@@ -1,144 +1,41 @@
-# Training：訓練、續訓與參數
+# MVP 訓練配方與輸出
 
-[回 manual 索引](../README.md)
+[回索引](../README.md)
 
-本頁：[Smoke test](#smoke-test) · [正式訓練](#training) · [續訓](#resume) · [輸出](#outputs) · [參數表](#parameters)
+## 必填設定
 
-下方 shell 指令都從 workspace 根目錄執行，不是從 `docs/` 執行。
+手動 source .env.sh 後，launcher 要求 PYTHON_BIN、MODEL、DATASET、OUTPUT_DIR、REPORT_TO；缺少就報錯，不補預設值。
 
-本頁的直接執行範例適用於已允許直接使用 GPU 的環境，且已完成 [Quickstart](quickstart.md)。**Slurm 使用者請用 [Slurm manual](slurm.md)，不要在 login node 直接跑以下訓練指令。**
+REPORT_TO 只接受 none／wandb；選 wandb 才要求 WANDB_ENTITY、WANDB_PROJECT、WANDB_NAME。API key 不放在設定檔。
 
-<a id="smoke-test"></a>
+直接執行 training.py 時，--model、--dataset、--output-dir、--report-to 也都是必填。
 
-## 1. 一般環境的 smoke test
+## 固定配方
 
-```bash
-CUDA_VISIBLE_DEVICES=0 \
-NPROC_PER_NODE=1 DEEPSPEED_CONFIG= \
-MAX_STEPS=2 \
-MAX_TRAIN_SAMPLES=32 \
-GRADIENT_ACCUMULATION_STEPS=1 \
-LOGGING_STEPS=1 \
-SAVE_STEPS=1 \
-OUTPUT_DIR=outputs/qwen-smoke \
-bash scripts/training/run_training.sh
-```
+只在 training.py 的 RECIPE 維護，不再提供對應的環境變數／CLI 旋鈕：
 
-這會載入**完整模型**，取資料前 32 筆，做 2 個 optimizer steps，測試 forward/backward 與 checkpoint 儲存。它不是小模型測試；少量樣本／steps 不會免除 9B full fine-tuning 的模型與 optimizer 記憶體需求。
+| 項目 | 值 |
+| --- | --- |
+| 訓練方式 | Full fine-tuning、BF16、ZeRO-2 |
+| Epoch／learning rate | 1／2e-5 |
+| 每卡 batch／累積步數 | 1／2；8 GPU global batch 為 16 |
+| 長度／截斷 | 4096 tokens／keep-start |
+| Loss | assistant reasoning + answer；assistant-only |
+| 其他 | gradient checkpointing 開啟、packing 關閉、SDPA、seed 42 |
+| 記錄／checkpoint | 每 10／250 steps，保留最近 2 個 checkpoints |
 
-`MAX_TRAIN_SAMPLES` 是取前 N 筆，不是分層抽樣，因此不保證維持 80/20。它適合 smoke test，不應直接當成正式混合比例實驗。
+操作只保留 --dry-run、--smoke、--resume-from-checkpoint PATH。訓練步數均指 optimizer steps。
 
-<a id="training"></a>
+Smoke 使用前 32 筆，不能保證 domain／retention 比例；正式訓練使用全部資料。長樣本截斷或無 loss 樣本被移除，都可能改變有效混合比例。
 
-## 2. 正式訓練
+## 輸出與安全
 
-```bash
-CUDA_VISIBLE_DEVICES=0 \
-NPROC_PER_NODE=1 DEEPSPEED_CONFIG= \
-MODEL=Qwen/Qwen3.5-9B \
-DATASET=dataset/mixed/siliconmind-retention-v1 \
-OUTPUT_DIR=outputs/qwen-domain-retention-v1 \
-EPOCHS=1 \
-LEARNING_RATE=2e-5 \
-BATCH_SIZE=1 \
-GRADIENT_ACCUMULATION_STEPS=16 \
-MAX_LENGTH=4096 \
-DTYPE=bf16 \
-bash scripts/training/run_training.sh
-```
+- run_arguments.json：此次輸入與固定配方；續訓另寫 resume_arguments.json。
+- training_chat_template.jinja、deepspeed_config.json：訓練設定快照。
+- checkpoint-N/：續訓用，包含 optimizer 等狀態。
+- final/：模型與 tokenizer，供推論／載入，不是完整續訓狀態。
+- trainer_state.json、train_results.json：進度與 metrics。
 
-正式執行前確認 shell 沒有殘留之前 `export` 的 `MAX_STEPS` 或 `MAX_TRAIN_SAMPLES`；正的 `MAX_STEPS` 會優先於 epochs，樣本上限也會繼續生效。上例採用單 GPU；launcher 不會因為看到多張 GPU 就自動啟動 DDP 或切分模型。
+非空輸出目錄會拒絕新訓練；只有明確指定 resume 才允許沿用。重現實驗仍需另外保存 dataset／recipe、model revision、code commit、lockfile 與 DeepSpeed 版本。
 
-上例的有效 batch size 約為 `1 × 16 = 16` 筆／optimizer step（尾批可能不足）。`MAX_STEPS`、`LOGGING_STEPS` 與 `SAVE_STEPS` 都以 optimizer steps 計算，不是單筆資料或 gradient accumulation 的 micro-batch 次數。
-
-<a id="resume"></a>
-
-## 3. 中斷後續訓
-
-假設 `checkpoint-250` 已存在：
-
-```bash
-NPROC_PER_NODE=1 DEEPSPEED_CONFIG= GRADIENT_ACCUMULATION_STEPS=16 \
-OUTPUT_DIR=outputs/qwen-domain-retention-v1 \
-RESUME_FROM_CHECKPOINT=outputs/qwen-domain-retention-v1/checkpoint-250 \
-bash scripts/training/run_training.sh
-```
-
-請沿用原本的模型、dataset、template、batch 等設定；上例延續前面的單 GPU 配置。程式不會自動從 `run_arguments.json` 恢復 CLI，也不會比對本次參數是否與原 run 一致。
-
-新的訓練若發現輸出目錄非空，會拒絕執行，避免不小心混用結果。續訓路徑需指向含有 `trainer_state.json` 的 `checkpoint-N/`；這只是基本檢查，是否有完整狀態仍由 Trainer 載入時確認。
-
-`final/` 是供載入模型的產物，不等同包含 optimizer/scheduler 等狀態的續訓 checkpoint。若設定 `MAX_STEPS`，它代表整個 run 的目標總步數，不是「再跑幾步」。
-
-<a id="outputs"></a>
-
-## 4. 輸出內容
-
-正常完成後，輸出目錄大致包含：
-
-```text
-OUTPUT_DIR/
-  run_arguments.json             # CLI 設定、resolved model、處理前後筆數
-                                # 另含 world size、global batch、Slurm job ID
-  resume_arguments.json          # 有續訓時才寫出；再次續訓會更新此檔
-  deepspeed_config.json          # 啟用時保存的輸入設定，保留 auto 值
-  resume_deepspeed_config.json   # 使用 DeepSpeed 續訓時另存本次設定
-  training_chat_template.jinja   # training 用的 template
-  checkpoint-N/                 # 依 save interval 產生的續訓 checkpoint
-  final/                        # 最終 model、tokenizer 及 inference template
-  trainer_state.json
-  train_results.json
-```
-
-實際模型檔名／分片方式由 Transformers 決定。還沒到儲存間隔就結束的 run，不一定有中途 checkpoint，但正常完成仍會寫出 `final/`。Trainer 也可能另外產生其他標準 metadata 檔案。
-
-需要重現實驗時，請另外保留上傳的 dataset／recipe、模型 revision、程式 commit、`envs/tp1/uv.lock` 與額外安裝的 DeepSpeed 版本；`run_arguments.json` 不會封存這些內容。
-
-<a id="parameters"></a>
-
-## 5. 參數怎麼設定
-
-只修改 `envs/tp1/.env.sh`，不需修改 launcher。優先順序為 **Python CLI > 環境變數 > `.env.sh` 預設值**；設定檔選擇與初始化見 [TP1 說明](../envs/tp1/README.md)。例如：
-
-```bash
-MAX_LENGTH=4096 bash scripts/training/run_training.sh --max-length 2048
-NPROC_PER_NODE=1 bash scripts/training/run_training.sh --help
-```
-
-上例實際使用 2048。Launcher 會依腳本位置找 workspace，因此預設路徑不依賴目前目錄；但**自行指定的相對路徑**仍相對於你執行指令時的工作目錄。
-
-| 環境變數 | Python CLI | 預設值／用途 |
-| --- | --- | --- |
-| `PYTHON_BIN` | 無，僅供 launcher 使用 | `<workspace>/scripts/training/envs/tp1/.venv/bin/python`。 |
-| `TRAINING_ENV_FILE` | 無，控制設定載入 | 一般 launcher 預設 `<workspace>/scripts/training/envs/tp1/.env.sh`；Slurm 無預設，須明確指定，建議使用絕對路徑。 |
-| `MODEL` | `--model` | `Qwen/Qwen3.5-9B`；也接受本地模型目錄。 |
-| `DATASET` | `--dataset` | `<workspace>/dataset/mixed/siliconmind-retention-v1`。 |
-| `OUTPUT_DIR` | `--output-dir` | `<workspace>/outputs/qwen-zero2-<job-id>`；非 Slurm 時尾碼為 `local`。 |
-| `CHAT_TEMPLATE` | `--chat-template` | 預設未設定，使用 `MODEL` 的 tokenizer template；指定 Jinja 檔案時才覆蓋，空環境變數視為未設定。 |
-| `EPOCHS` | `--epochs` | `1`。 |
-| `MAX_STEPS` | `--max-steps` | `-1` 表示由 epochs 控制；正整數會覆蓋 epochs。 |
-| `LEARNING_RATE` | `--learning-rate` | `2e-5`。 |
-| `BATCH_SIZE` | `--batch-size` | `1`，每張 GPU 的 micro-batch 大小。 |
-| `GRADIENT_ACCUMULATION_STEPS` | `--gradient-accumulation-steps` | `2`。 |
-| `MAX_LENGTH` | `--max-length` | `4096`，整段 conversation 的上限，包含 template、prompt、reasoning、答案。 |
-| `DTYPE` | `--dtype` | `bf16`；可選 `fp16`、`fp32`。 |
-| `ATTN_IMPLEMENTATION` | `--attn-implementation` | `sdpa`；其他 backend 需模型與環境支援。 |
-| `LOGGING_STEPS` | `--logging-steps` | `10`。 |
-| `SAVE_STEPS` | `--save-steps` | `250`。 |
-| `SAVE_TOTAL_LIMIT` | `--save-total-limit` | `2`，限制保留的中途 checkpoints，不包含另存的 `final/`。 |
-| `SEED` | `--seed` | `42`，同時設定訓練與資料 seed；不保證跨硬體完全一致。 |
-| `DATASET_NUM_PROC` | `--dataset-num-proc` | `1`；單程序時在目前 process 處理，大於 1 才使用多程序。 |
-| `NPROC_PER_NODE` | 無，控制 launcher | `8`；大於 1 時用單節點 torchrun。Slurm template 要求為 `8`；單 process 預覽設 `1`。 |
-| `DEEPSPEED_CONFIG` | `--deepspeed` | `<training>/deepspeed_zero2.json`；一般執行可設空字串停用，Slurm template 要求有效檔案。 |
-| `MAX_TRAIN_SAMPLES` | `--max-train-samples` | 未設定，使用全部資料。 |
-| `RESUME_FROM_CHECKPOINT` | `--resume-from-checkpoint` | 未設定，從指定 checkpoint 恢復。 |
-| `REPORT_TO` | `--report-to` | `none`；也支援 `tensorboard`、`wandb`，需另外備妥套件與設定；W&B 會啟用外部記錄。 |
-
-以下選項沒有對應的 bash 環境變數，直接附在指令後面：
-
-- `--dry-run`：只預覽，不訓練。
-- `--preview-samples N`：預覽前 N 筆，預設 3；正式訓練前也會預覽。
-- `--local-files-only`：只使用本地／快取模型檔案，缺檔時報錯。
-- `--gradient-checkpointing`／`--no-gradient-checkpointing`：開啟／關閉 gradient checkpointing，預設開啟；以重算換取較低 activation 記憶體使用量。
-
-表中為 `.env.example.sh` 的初始值；直接執行 `training.py` 不會載入 `.env.sh`，會使用 Python CLI 自己的預設值。W&B 設定見 [W&B manual](wandb.md#settings)，Slurm 資源見 [Slurm manual](slurm.md#defaults)。
+不使用 Slurm 時，先取得 GPU 使用權，再明確提供 NPROC_PER_NODE 執行 run_training.sh。MVP 不提供 CPU 正式訓練、LoRA 或 evaluation pipeline。
