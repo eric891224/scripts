@@ -10,19 +10,19 @@ REPORT_TO 只接受 none／wandb；選 wandb 才要求 WANDB_ENTITY、WANDB_PROJ
 
 直接執行 training.py 時，--model、--dataset、--output-dir、--report-to 也都是必填。
 
-## 固定配方
+## 預設配方
 
 只在 training.py 的 RECIPE 維護，不再提供對應的環境變數／CLI 旋鈕：
 
-| 項目 | 值 |
-| --- | --- |
-| 訓練方式 | Full fine-tuning、BF16、ZeRO-2 |
-| Epoch／learning rate | 1／2e-5 |
-| 每卡 batch／累積步數 | 1／2；8 GPU global batch 為 16 |
-| 長度／截斷 | 4096 tokens／keep-start |
-| Loss | assistant reasoning + answer；assistant-only |
-| 其他 | gradient checkpointing 開啟、packing 關閉、SDPA、seed 42 |
-| 記錄／checkpoint | 每 10／250 steps，保留最近 2 個 checkpoints |
+| 項目                 | 值                                                       |
+| -------------------- | -------------------------------------------------------- |
+| 訓練方式             | Full fine-tuning、BF16、ZeRO-2                           |
+| Epoch／learning rate | 1／2e-5                                                  |
+| 每卡 batch／累積步數 | 1／2；8 GPU global batch 為 16                           |
+| 長度／截斷           | 4096 tokens／keep-start                                  |
+| Loss                 | assistant reasoning + answer；assistant-only             |
+| 其他                 | gradient checkpointing 開啟、packing 關閉、SDPA、seed 42 |
+| 記錄／checkpoint     | 每 10／250 steps，保留最近 2 個 checkpoints              |
 
 操作只保留 --dry-run、--smoke、--resume-from-checkpoint PATH。訓練步數均指 optimizer steps。
 

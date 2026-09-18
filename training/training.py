@@ -11,14 +11,44 @@ import json
 import os
 from pathlib import Path
 
-# Fixed MVP recipe: edit here, not in environment variables or shell launchers.
+# Fixed Default MVP recipe: copy and then edit here, not in environment variables or shell launchers.
+# RECIPE = {
+#     "epochs": 1.0,
+#     "learning_rate": 2e-5,
+#     "batch_size": 1,
+#     "gradient_accumulation_steps": 2,
+#     "max_length": 4096,
+#     "dtype": "bf16",
+#     "attn_implementation": "sdpa",
+#     "gradient_checkpointing": True,
+#     "logging_steps": 10,
+#     "save_steps": 250,
+#     "save_total_limit": 2,
+#     "seed": 42,
+#     "dataset_num_proc": 1,
+#     "max_steps": -1,
+#     "max_train_samples": None,
+#     "preview_samples": 3,
+#     "deepspeed": Path(__file__).with_name("deepspeed_zero2.json"),
+# }
+
+# global_batch_size: 128 = n_gpu (8) * batch_size (2) * gradient_accumulation_steps (8)
 RECIPE = {
-    "epochs": 1.0, "learning_rate": 2e-5, "batch_size": 1,
-    "gradient_accumulation_steps": 2, "max_length": 4096,
-    "dtype": "bf16", "attn_implementation": "sdpa",
-    "gradient_checkpointing": True, "logging_steps": 10,
-    "save_steps": 250, "save_total_limit": 2, "seed": 42,
-    "dataset_num_proc": 1, "max_steps": -1, "max_train_samples": None,
+    "epochs": 1.0,
+    "learning_rate": 2e-5,
+    "batch_size": 2,
+    "gradient_accumulation_steps": 8,
+    "max_length": 4096,
+    "dtype": "bf16",
+    "attn_implementation": "sdpa",
+    "gradient_checkpointing": True,
+    "logging_steps": 10,
+    "save_steps": 250,
+    "save_total_limit": 2,
+    "seed": 42,
+    "dataset_num_proc": 1,
+    "max_steps": -1,
+    "max_train_samples": None,
     "preview_samples": 3,
     "deepspeed": Path(__file__).with_name("deepspeed_zero2.json"),
 }
@@ -40,7 +70,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--report-to", required=True, choices=["none", "wandb"])
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
-    mode.add_argument("--smoke", action="store_true", help="Train two steps on the first 32 rows; save each step.")
+    mode.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Train two steps on the first 32 rows; save each step.",
+    )
     parser.add_argument("--resume-from-checkpoint", type=Path)
     args = parser.parse_args(argv)
     args.dataset, args.output_dir = Path(args.dataset), Path(args.output_dir)
@@ -53,7 +87,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.smoke:
         args.max_steps, args.max_train_samples = 2, 32
         args.logging_steps, args.save_steps = 1, 1
-    args.local_files_only = os.environ.get("HF_HUB_OFFLINE", "").upper() in {"1", "TRUE", "YES", "ON"}
+    args.local_files_only = os.environ.get("HF_HUB_OFFLINE", "").upper() in {
+        "1",
+        "TRUE",
+        "YES",
+        "ON",
+    }
     return args
 
 
@@ -81,9 +120,13 @@ def load_training_dataset(path: Path, limit: int | None = None):
 
     dataset = load_from_disk(str(path))
     if not isinstance(dataset, Dataset):
-        raise ValueError("Expected a single saved Dataset; select/save the training split first.")
+        raise ValueError(
+            "Expected a single saved Dataset; select/save the training split first."
+        )
     if not len(dataset) or "messages" not in dataset.column_names:
-        raise ValueError("Training dataset must be nonempty and contain canonical messages.")
+        raise ValueError(
+            "Training dataset must be nonempty and contain canonical messages."
+        )
     if limit is not None:
         dataset = dataset.select(range(min(limit, len(dataset))))
     return dataset
@@ -117,12 +160,18 @@ def resolve_training_template(tokenizer) -> str:
     """
     from trl.chat_template_utils import get_training_chat_template
 
-    if not isinstance(tokenizer.chat_template, str) or not tokenizer.chat_template.strip():
+    if (
+        not isinstance(tokenizer.chat_template, str)
+        or not tokenizer.chat_template.strip()
+    ):
         raise ValueError(
             "Expected a single nonempty tokenizer chat template. "
             "Choose a model with a supported tokenizer template."
         )
-    return get_training_chat_template(processing_class=tokenizer) or tokenizer.chat_template
+    return (
+        get_training_chat_template(processing_class=tokenizer)
+        or tokenizer.chat_template
+    )
 
 
 def preview_sample(tokenizer, sample: dict, template: str, max_length: int) -> dict:
@@ -144,7 +193,11 @@ def preview_sample(tokenizer, sample: dict, template: str, max_length: int) -> d
         raise ValueError("Template produced no usable assistant loss mask.")
     retained_ids = ids[:max_length]
     retained_masks = masks[:max_length]
-    loss_ids = [token for token, mask in zip(retained_ids[1:], retained_masks[1:], strict=True) if mask]
+    loss_ids = [
+        token
+        for token, mask in zip(retained_ids[1:], retained_masks[1:], strict=True)
+        if mask
+    ]
     return {
         "tokens": len(ids),
         "retained_tokens": len(retained_ids),
@@ -185,7 +238,9 @@ def build_training_config(args: argparse.Namespace):
         dataset_num_proc=args.dataset_num_proc if args.dataset_num_proc > 1 else None,
         report_to=args.report_to,
         model_init_kwargs={
-            "dtype": {"bf16": "bfloat16", "fp16": "float16", "fp32": "float32"}[args.dtype],
+            "dtype": {"bf16": "bfloat16", "fp16": "float16", "fp32": "float32"}[
+                args.dtype
+            ],
             "attn_implementation": args.attn_implementation,
             "device_map": None,  # Let Trainer place the model; never inference-style auto sharding.
             "local_files_only": args.local_files_only,
@@ -209,9 +264,13 @@ def check_output_directory(args: argparse.Namespace) -> None:
     """Refuse accidental reuse of a run directory unless explicitly resuming."""
     if args.resume_from_checkpoint is not None:
         if not (args.resume_from_checkpoint / "trainer_state.json").is_file():
-            raise ValueError("--resume-from-checkpoint must point to a Trainer checkpoint.")
+            raise ValueError(
+                "--resume-from-checkpoint must point to a Trainer checkpoint."
+            )
     elif args.output_dir.exists() and any(args.output_dir.iterdir()):
-        raise ValueError("Output directory is nonempty. Choose a new run name or --resume-from-checkpoint.")
+        raise ValueError(
+            "Output directory is nonempty. Choose a new run name or --resume-from-checkpoint."
+        )
 
 
 def check_distributed_output_directory(args: argparse.Namespace, config) -> None:
@@ -239,22 +298,34 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     from transformers import AutoTokenizer, set_seed
 
-    os.environ["WANDB_LOG_MODEL"] = "false"  # MVP logs metrics, never uploads checkpoints.
+    os.environ["WANDB_LOG_MODEL"] = (
+        "false"  # MVP logs metrics, never uploads checkpoints.
+    )
     set_seed(args.seed)
     dataset = load_training_dataset(args.dataset, args.max_train_samples)
     model_path = resolve_model_path(args.model, args.local_files_only)
-    tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=args.local_files_only)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path, local_files_only=args.local_files_only
+    )
     template = resolve_training_template(tokenizer)
     if int(os.environ.get("RANK", "0")) == 0:
         print(f"Dataset: {args.dataset} ({len(dataset):,} rows)")
-        print("Full fine-tuning; assistant-only loss; reasoning + answer; packing disabled.")
+        print(
+            "Full fine-tuning; assistant-only loss; reasoning + answer; packing disabled."
+        )
         for index in range(min(args.preview_samples, len(dataset))):
-            preview = preview_sample(tokenizer, dataset[index], template, args.max_length)
+            preview = preview_sample(
+                tokenizer, dataset[index], template, args.max_length
+            )
             print(f"Preview {index}: {json.dumps(preview, ensure_ascii=False)}")
             if preview["loss_tokens"] == 0:
-                print("WARNING: this row has no retained assistant tokens; TRL will drop it.")
+                print(
+                    "WARNING: this row has no retained assistant tokens; TRL will drop it."
+                )
     if args.dry_run:
-        print("Dry run complete: preview only, no model weights loaded or training started.")
+        print(
+            "Dry run complete: preview only, no model weights loaded or training started."
+        )
         return
 
     from trl import SFTTrainer
@@ -278,10 +349,16 @@ def main(argv: list[str] | None = None) -> None:
     )
     disable_training_cache(trainer.model)
     if not len(trainer.train_dataset):
-        raise ValueError("No trainable samples remain; review data or RECIPE max_length.")
+        raise ValueError(
+            "No trainable samples remain; review data or RECIPE max_length."
+        )
     if trainer.is_world_process_zero():
-        global_batch = config.world_size * args.batch_size * args.gradient_accumulation_steps
-        print(f"Prepared rows: {len(trainer.train_dataset):,}/{len(dataset):,}. Truncation can change mixture ratios.")
+        global_batch = (
+            config.world_size * args.batch_size * args.gradient_accumulation_steps
+        )
+        print(
+            f"Prepared rows: {len(trainer.train_dataset):,}/{len(dataset):,}. Truncation can change mixture ratios."
+        )
         print(f"World size: {config.world_size}; global batch size: {global_batch}")
         args.output_dir.mkdir(parents=True, exist_ok=True)
         metadata = vars(args) | {
@@ -293,15 +370,31 @@ def main(argv: list[str] | None = None) -> None:
             "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
         }
         # Keep original run arguments when resuming.
-        metadata_name = "resume_arguments.json" if args.resume_from_checkpoint else "run_arguments.json"
-        (args.output_dir / metadata_name).write_text(json.dumps(metadata, default=str, indent=2) + "\n", encoding="utf-8")
-        (args.output_dir / "training_chat_template.jinja").write_text(template, encoding="utf-8")
+        metadata_name = (
+            "resume_arguments.json"
+            if args.resume_from_checkpoint
+            else "run_arguments.json"
+        )
+        (args.output_dir / metadata_name).write_text(
+            json.dumps(metadata, default=str, indent=2) + "\n", encoding="utf-8"
+        )
+        (args.output_dir / "training_chat_template.jinja").write_text(
+            template, encoding="utf-8"
+        )
         if args.deepspeed:
             # Snapshot the input settings; "auto" values are resolved by Trainer.
-            config_name = "resume_deepspeed_config.json" if args.resume_from_checkpoint else "deepspeed_config.json"
-            (args.output_dir / config_name).write_text(args.deepspeed.read_text(encoding="utf-8"), encoding="utf-8")
+            config_name = (
+                "resume_deepspeed_config.json"
+                if args.resume_from_checkpoint
+                else "deepspeed_config.json"
+            )
+            (args.output_dir / config_name).write_text(
+                args.deepspeed.read_text(encoding="utf-8"), encoding="utf-8"
+            )
     result = trainer.train(
-        resume_from_checkpoint=str(args.resume_from_checkpoint) if args.resume_from_checkpoint else None,
+        resume_from_checkpoint=(
+            str(args.resume_from_checkpoint) if args.resume_from_checkpoint else None
+        ),
     )
     trainer.save_model(str(args.output_dir / "final"))
     trainer.save_state()
