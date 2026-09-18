@@ -32,11 +32,11 @@ from pathlib import Path
 #     "deepspeed": Path(__file__).with_name("deepspeed_zero2.json"),
 # }
 
-# global_batch_size: 128 = n_gpu (8) * batch_size (2) * gradient_accumulation_steps (8)
+# global_batch_size: 64 = n_gpu (8) * batch_size (1) * gradient_accumulation_steps (8)
 RECIPE = {
     "epochs": 1.0,
     "learning_rate": 2e-5,
-    "batch_size": 2,
+    "batch_size": 1,
     "gradient_accumulation_steps": 8,
     "max_length": 4096,
     "dtype": "bf16",
