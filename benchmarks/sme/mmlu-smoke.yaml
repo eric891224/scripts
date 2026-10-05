@@ -1,0 +1,34 @@
+name: mmlu-smoke
+baseline: smoke-model
+output_dir: /tmp/sm-eval-mmlu-smoke
+
+models:
+    - name: smoke-model
+      model: gemma-4-31B-it
+      api_base: http://localhost:8799/v1
+
+benchmarks:
+    - id: mmlu-smoke-0shot
+      name: mmlu
+      protocol:
+          task: mmlu
+          num_fewshot: 0
+          max_length: 8192
+          limit: 1
+      inference:
+          mode: loglikelihood
+
+execution:
+    runners:
+        mmlu:
+            command: [sme-mmlu-runner]
+            runtime:
+                type: uv
+                project: /home/siliconmind/cl/sm-eval/runners/mmlu
+            target:
+                type: local
+
+    requests:
+        concurrency: 4
+        timeout_seconds: 120
+        max_retries: 0

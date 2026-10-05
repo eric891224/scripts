@@ -1,33 +1,77 @@
-from pathlib import Path
+"""Checks sm-dp converters with local datasets."""
 
-from datasets import load_dataset
-from sm_dp.converters.siliconmind import convert_sample as convert_siliconmind_sample
-from sm_dp.converters.smoltalk import convert_sample as convert_smoltalk_sample
+import pathlib
 
-SILICONMIND_DATASET_PATH = Path("/home/siliconmind/cl/dataset/siliconmind_oss-38k")
-SMOLTALK_DATASET_PATH = Path(
-    "/home/siliconmind/cl/dataset/smoltalk/data/everyday-conversations"
+import datasets
+
+from sm_dp import adapters
+from sm_dp import converters
+
+_DATASET_ROOT = pathlib.Path("/home/siliconmind/cl/dataset")
+_DOLCI_SHARD_PATH = (
+    _DATASET_ROOT
+    / "Dolci-Think-SFT-7B"
+    / "data"
+    / "train-00000-of-00156.parquet"
 )
 
-siliconmind_raw = load_dataset(str(SILICONMIND_DATASET_PATH), split="train")
-siliconmind = siliconmind_raw.map(
-    lambda row, index: convert_siliconmind_sample(
-        row, index=index, category="spec2rtl"
-    ),
-    with_indices=True,
-    remove_columns=siliconmind_raw.column_names,
-)
 
-smoltalk_raw = load_dataset(str(SMOLTALK_DATASET_PATH), split="train")
-smoltalk = smoltalk_raw.map(
-    lambda row, index: convert_smoltalk_sample(
-        row, index=index, category="conversations"
-    ),
-    with_indices=True,
-    remove_columns=smoltalk_raw.column_names,
-)
+def main() -> None:
+    """Converts and prints samples from three local datasets."""
+    siliconmind_raw = datasets.load_dataset(
+        str(_DATASET_ROOT / "siliconmind_oss-38k"),
+        split="train",
+    )
+    siliconmind_dataset = converters.convert_dataset(
+        siliconmind_raw,
+        converter=adapters.siliconmind.convert_sample,
+        category="spec2rtl",
+    )
 
-print("SiliconMind dataset sample:")
-print(siliconmind[0])
-print("Smoltalk dataset sample:")
-print(smoltalk[0])
+    smoltalk_raw = datasets.load_dataset(
+        str(
+            _DATASET_ROOT
+            / "smoltalk"
+            / "data"
+            / "everyday-conversations"
+        ),
+        split="train",
+    )
+    smoltalk_dataset = converters.convert_dataset(
+        smoltalk_raw,
+        converter=adapters.smoltalk.convert_sample,
+        category="conversations",
+    )
+
+    dolci_raw = datasets.load_dataset(
+        "parquet",
+        data_files=str(_DOLCI_SHARD_PATH),
+        split="train[:8]",
+    )
+    dolci_dataset = converters.convert_dataset(
+        dolci_raw,
+        converter=adapters.dolci.convert_sample,
+    )
+
+    assert (
+        siliconmind_dataset.features
+        == smoltalk_dataset.features
+        == dolci_dataset.features
+    )
+    assert all(
+        "<think>" not in message["content"]
+        for sample in dolci_dataset
+        for message in sample["messages"]
+        if message["role"] == "assistant"
+    )
+
+    print("SiliconMind dataset sample:")
+    print(siliconmind_dataset[0])
+    print("SmolTalk dataset sample:")
+    print(smoltalk_dataset[0])
+    print("Dolci Think dataset sample:")
+    print(dolci_dataset[0])
+
+
+if __name__ == "__main__":
+    main()

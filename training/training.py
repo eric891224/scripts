@@ -7,6 +7,7 @@ could otherwise leak between train and validation. Evaluation is a separate step
 """
 
 import argparse
+import copy
 import json
 import os
 from pathlib import Path
@@ -96,22 +97,74 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def adapt_sample(sample: dict) -> dict:
-    """Copy canonical messages and expose assistant reasoning to Qwen's template.
+def _decode_tool_payload(value: str | dict) -> dict:
+    """Restores a JSON object from a stored tool payload.
 
-    The saved canonical schema and input dictionaries are not mutated. None becomes
-    an empty reasoning_content only in this model-facing view: Qwen then emits
-    an empty <think> block, rather than inventing reasoning for retention data.
-    Tool/system/user messages are not given an assistant reasoning field.
+    Args:
+        value: A JSON string or a decoded dictionary.
+
+    Returns:
+        A new dictionary containing the tool payload.
+
+    Raises:
+        ValueError: If the payload is invalid JSON or is not an object.
     """
-    messages = []
-    for message in sample["messages"]:
-        adapted = dict(message)
-        reasoning = adapted.pop("reasoning", None)
-        if adapted["role"] == "assistant":
-            adapted["reasoning_content"] = reasoning if reasoning is not None else ""
-        messages.append(adapted)
-    return {"messages": messages}
+    decoded = json.loads(value) if isinstance(value, str) else value
+    if not isinstance(decoded, dict):
+        raise ValueError("Tool payload must be a JSON object.")
+    return copy.deepcopy(decoded)
+
+
+def adapt_sample(sample: dict) -> dict:
+    """Prepares a saved conversation for the Qwen chat template.
+
+    This function leaves the input unchanged. Assistant reasoning uses
+    reasoning_content. Missing reasoning becomes an empty think block.
+    Tool arguments and parameters are decoded before template rendering.
+
+    Args:
+        sample: A sample with messages and optional tool definitions.
+
+    Returns:
+        A new dictionary with model-facing messages and tools.
+
+    Raises:
+        ValueError: If a tool payload is invalid.
+    """
+    messages = copy.deepcopy(sample["messages"])
+    for message in messages:
+        reasoning = message.pop("reasoning", None)
+        if message["role"] == "assistant":
+            message["reasoning_content"] = (
+                reasoning if reasoning is not None else ""
+            )
+
+        calls = []
+        for call in message.get("tool_calls", []):
+            adapted_call = {
+                "type": "function",
+                "function": {
+                    "name": call["name"],
+                    "arguments": _decode_tool_payload(call["arguments"]),
+                },
+            }
+            if call.get("id") is not None:
+                adapted_call["id"] = call["id"]
+            calls.append(adapted_call)
+        message["tool_calls"] = calls
+
+    tools = []
+    for tool in sample.get("tools", []):
+        function = {"name": tool["name"]}
+        if tool.get("description") is not None:
+            function["description"] = tool["description"]
+        if tool.get("parameters") is not None:
+            function["parameters"] = _decode_tool_payload(
+                tool["parameters"]
+            )
+        tools.append({"type": "function", "function": function})
+
+    return {"messages": messages, "tools": tools}
 
 
 def load_training_dataset(path: Path, limit: int | None = None):
@@ -174,14 +227,33 @@ def resolve_training_template(tokenizer) -> str:
     )
 
 
-def preview_sample(tokenizer, sample: dict, template: str, max_length: int) -> dict:
-    """Preview the same keep-start truncation and assistant mask used by SFT.
+def tokenize_sample(
+    sample: dict,
+    *,
+    tokenizer,
+    template: str,
+) -> dict[str, list[int]]:
+    """Tokenizes a saved conversation and marks assistant output.
 
-    Counts exclude the first token because causal LM labels are shifted. The
-    result describes one sample only; it is not a full-dataset quality audit.
+    Tool payloads are decoded only during template rendering.
+    This function leaves the input unchanged.
+
+    Args:
+        sample: A saved conversation sample.
+        tokenizer: The model tokenizer.
+        template: A training template with generation markers.
+
+    Returns:
+        Input token IDs and an assistant mask of the same length.
+
+    Raises:
+        ValueError: If a tool payload is invalid or the template produces
+            no usable assistant mask.
     """
+    adapted = adapt_sample(sample)
     encoded = tokenizer.apply_chat_template(
-        adapt_sample(sample)["messages"],
+        adapted["messages"],
+        tools=adapted["tools"] or None,
         chat_template=template,
         tokenize=True,
         add_generation_prompt=False,
@@ -191,6 +263,22 @@ def preview_sample(tokenizer, sample: dict, template: str, max_length: int) -> d
     ids, masks = encoded["input_ids"], encoded["assistant_masks"]
     if len(ids) != len(masks) or not any(masks):
         raise ValueError("Template produced no usable assistant loss mask.")
+    return {"input_ids": ids, "assistant_masks": masks}
+
+
+def preview_sample(tokenizer, sample: dict, template: str, max_length: int) -> dict:
+    """Preview the same keep-start truncation and assistant mask used by SFT.
+
+    Counts exclude the first token because causal LM labels are shifted. The
+    result describes one sample only; it is not a full-dataset quality audit.
+    """
+    encoded = tokenize_sample(
+        sample,
+        tokenizer=tokenizer,
+        template=template,
+    )
+    ids = encoded["input_ids"]
+    masks = encoded["assistant_masks"]
     retained_ids = ids[:max_length]
     retained_masks = masks[:max_length]
     loss_ids = [
@@ -333,13 +421,21 @@ def main(argv: list[str] | None = None) -> None:
     # SFTConfig initializes distributed state before model construction.
     config = build_training_config(args)
     check_distributed_output_directory(args, config)
-    # On a shared filesystem, rank zero builds the adapter cache first. TRL
-    # separately coordinates its own tokenization/preparation inside SFTTrainer.
-    with config.main_process_first(desc="Adapting reasoning for Qwen"):
+    # On a shared filesystem, rank zero builds the tokenization cache first.
+    # Keep source fields encoded. TRL builds labels from assistant_masks.
+    with config.main_process_first(desc="Tokenizing for Qwen"):
         dataset = dataset.map(
-            adapt_sample,
-            num_proc=args.dataset_num_proc if args.dataset_num_proc > 1 else None,
-            desc="Adapting reasoning for Qwen",
+            tokenize_sample,
+            fn_kwargs={
+                "tokenizer": tokenizer,
+                "template": template,
+            },
+            num_proc=(
+                args.dataset_num_proc
+                if args.dataset_num_proc > 1
+                else None
+            ),
+            desc="Tokenizing for Qwen",
         )
     trainer = SFTTrainer(
         model=model_path,

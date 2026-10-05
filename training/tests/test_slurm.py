@@ -129,7 +129,15 @@ def test_spooled_slurm_has_no_environment_directory_dependency(launcher_env, tmp
     ]
     args = training.parse_args(payload["argv"][7:])
     assert (args.max_steps, args.max_train_samples) == (2, 32)
-    assert args.batch_size * args.gradient_accumulation_steps * 8 == 16
+    expected_global_batch = (
+        training.RECIPE["batch_size"]
+        * training.RECIPE["gradient_accumulation_steps"]
+        * 8
+    )
+    assert (
+        args.batch_size * args.gradient_accumulation_steps * 8
+        == expected_global_batch
+    )
     assert args.output_dir == Path(env["OUTPUT_DIR"])
     assert not (directory / "envs").exists()
     assert json.loads(Path(env["SRUN_CAPTURE"]).read_text())[:4] == [
@@ -205,10 +213,16 @@ def test_zero2_config_has_auto_batch_and_no_offload():
 
 def test_fixed_recipe_forwards_deepspeed(monkeypatch):
     import trl
+
+    monkeypatch.setitem(training.RECIPE, "gradient_accumulation_steps", 3)
     monkeypatch.setattr(trl, "SFTConfig", lambda **kwargs: kwargs)
+
     config = training.build_training_config(parse())
-    assert config["deepspeed"] == str(TRAINING_DIR / "deepspeed_zero2.json")
-    assert config["gradient_accumulation_steps"] == 2
+
+    assert config["deepspeed"] == str(
+        TRAINING_DIR / "deepspeed_zero2.json"
+    )
+    assert config["gradient_accumulation_steps"] == 3
     assert config["model_init_kwargs"]["device_map"] is None
 
 

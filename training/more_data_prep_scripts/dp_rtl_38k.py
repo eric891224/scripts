@@ -7,9 +7,6 @@ from sm_dp.converters import convert_dataset
 from sm_dp.adapters.siliconmind import (
     convert_sample as convert_siliconmind_sample,
 )
-from sm_dp.adapters.smoltalk import (
-    convert_sample as convert_smoltalk_sample,
-)
 from sm_dp.mixing import (
     DatasetGroupSpec,
     DatasetSpec,
@@ -20,7 +17,7 @@ from sm_dp.mixing import (
 
 DATASET_ROOT = Path("/home/siliconmind/cl/dataset")
 
-OUTPUT_PATH = DATASET_ROOT / "mixed" / "siliconmind-retention-v1"
+OUTPUT_PATH = DATASET_ROOT / "mixed" / "siliconmind-rtl-38k"
 
 RECIPE_PATH = OUTPUT_PATH.with_suffix(".mixture.json")
 
@@ -52,43 +49,20 @@ def main() -> None:
             converter=convert_siliconmind_sample,
             category="spec2rtl",
         ),
-        "smoltalk-everyday": load_and_convert(
-            DATASET_ROOT / "smoltalk" / "data" / "everyday-conversations",
-            converter=convert_smoltalk_sample,
-            category="everyday-conversations",
-        ),
-        "smoltalk-math": load_and_convert(
-            DATASET_ROOT / "smoltalk" / "data" / "metamathqa-50k",
-            converter=convert_smoltalk_sample,
-            category="metamathqa-50k",
-        ),
     }
 
     # 2. Define the mixture recipe.
     spec = MixtureSpec(
-        size=45_000,
+        size=38_000,
         seed=42,
         replacement_strategy=ReplacementMode.AUTO,
         max_repeat_factor=4.0,
         groups={
             "domain": DatasetGroupSpec(
-                weight=80,
+                weight=1,
                 datasets=[
                     DatasetSpec(
                         name="siliconmind-spec2rtl",
-                        weight=1,
-                    ),
-                ],
-            ),
-            "retention": DatasetGroupSpec(
-                weight=20,
-                datasets=[
-                    DatasetSpec(
-                        name="smoltalk-everyday",
-                        weight=1,
-                    ),
-                    DatasetSpec(
-                        name="smoltalk-math",
                         weight=1,
                     ),
                 ],
@@ -117,9 +91,7 @@ def main() -> None:
     assert len(mixed) == spec.size
 
     # Expected quotas:
-    assert category_counts["spec2rtl"] == 36_000
-    assert category_counts["everyday-conversations"] == 4_500
-    assert category_counts["metamathqa-50k"] == 4_500
+    assert category_counts["spec2rtl"] == 38_000
 
     # 5. Save the Hugging Face Dataset and its recipe.
     OUTPUT_PATH.parent.mkdir(
