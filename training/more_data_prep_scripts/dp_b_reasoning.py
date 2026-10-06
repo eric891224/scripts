@@ -4,8 +4,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from datasets import Dataset, load_dataset, load_from_disk
 
+from sm_dp import schema, storage
 from sm_dp.adapters.dolci import convert_sample as convert_dolci_sample
 from sm_dp.adapters.siliconmind import (
     convert_sample as convert_siliconmind_sample,
@@ -19,7 +21,6 @@ from sm_dp.mixing import (
     ReplacementMode,
     mix,
 )
-from sm_dp.parsers.reasoning import split_reasoning
 
 DATASET_ROOT = Path("/home/siliconmind/cl/dataset")
 OUTPUT_PATH = (
@@ -28,34 +29,59 @@ OUTPUT_PATH = (
 RECIPE_PATH = OUTPUT_PATH.with_suffix(".mixture.json")
 
 
-def has_complete_assistant_responses(raw: dict[str, Any]) -> bool:
-    """Checks for think blocks without an answer or tool calls.
+def sample_dolci(
+    path: Path,
+    *,
+    size: int,
+    seed: int,
+) -> Dataset:
+    """Samples valid Dolci conversations without replacement.
 
-    Rejects the full conversation if an assistant has a closed think
-    block but no answer or tool calls. Does not change the input.
-    Other format errors remain subject to converter validation.
+    Visits raw rows in a random order. Stops after size valid rows.
+    Skips rows with adapter or schema ValueError exceptions.
+    Does not enforce quotas for individual Dolci sources.
 
     Args:
-        raw: A source row with a messages field.
+        path: The local Dolci source directory.
+        size: The number of valid conversations to select.
+        seed: The seed for the random candidate order.
 
     Returns:
-        False if an assistant think block has no answer or tool calls.
-        Otherwise, True.
+        A dataset with canonical storage features.
+
+    Raises:
+        ValueError: If size is not positive or too few valid rows exist.
+        Exception: Other loading, conversion, or storage errors propagate.
     """
-    for message in raw["messages"]:
-        if message["role"] != "assistant":
+    if size <= 0:
+        raise ValueError("Dolci sample size must be positive.")
+
+    raw = load_dataset(str(path), split="train")
+    indices = np.random.default_rng(seed).permutation(len(raw))
+    rows: list[dict[str, Any]] = []
+    rejected = 0
+
+    for index in indices:
+        index = int(index)
+        try:
+            sample = convert_dolci_sample(raw[index], index=index)
+        except ValueError:
+            # Includes schema validation and adapter data errors.
+            rejected += 1
             continue
 
-        content = message.get("content") or ""
-        if (
-            content.lstrip().startswith("<think>")
-            and "</think>" in content
-        ):
-            _, answer = split_reasoning(content)
-            if not answer and not message.get("tool_calls"):
-                return False
+        rows.append(storage.encode_sample(sample))
+        if len(rows) == size:
+            break
 
-    return True
+    if len(rows) != size:
+        raise ValueError(
+            f"Need {size} valid Dolci rows; found {len(rows)}."
+        )
+
+    print(f"Dolci: selected {len(rows):,}; rejected {rejected:,}")
+    print(f"Dolci sources: {Counter(row['category'] for row in rows)}")
+    return Dataset.from_list(rows, features=schema.CONVERSATION_FEATURES)
 
 
 def load_and_convert(
@@ -64,11 +90,7 @@ def load_and_convert(
     converter: SampleConverter,
     category: str | None = None,
 ) -> Dataset:
-    """Loads, filters Dolci responses, and converts training rows.
-
-    For Dolci, removes conversations with closed assistant think blocks
-    but no answer or tool calls. Reports the kept and removed row counts.
-    Does not filter other sources.
+    """Loads and converts all training rows from a local source.
 
     Args:
         path: The source dataset directory.
@@ -79,14 +101,6 @@ def load_and_convert(
         A dataset with canonical storage features.
     """
     raw = load_dataset(str(path), split="train")
-    if converter is convert_dolci_sample:
-        before = len(raw)
-        raw = raw.filter(
-            has_complete_assistant_responses,
-            desc="Filtering Dolci responses without answers",
-        )
-        print(f"Dolci: kept {len(raw):,}; removed {before - len(raw):,}")
-
     return convert_dataset(
         raw,
         converter=converter,
@@ -129,39 +143,11 @@ def main() -> None:
         ),
     }
 
-    # Keep the same 2,250-row, source-stratified Dolci cohort in B and D.
-    dolci = load_and_convert(
+    # Sample candidates first. Convert only enough valid rows for the quota.
+    datasets["dolci-think"] = sample_dolci(
         DATASET_ROOT / "Dolci-Think-SFT-7B",
-        converter=convert_dolci_sample,
-    )
-    dolci_counts = Counter(dolci["category"])
-    dolci_sources = {
-        category: dolci.filter(
-            lambda value: value == category,
-            input_columns="category",
-            desc=f"Selecting Dolci {category}",
-        )
-        for category in sorted(dolci_counts)
-    }
-    datasets["dolci-think"] = mix(
-        datasets=dolci_sources,
-        spec=MixtureSpec(
-            size=2_250,
-            seed=42,
-            replacement_strategy=ReplacementMode.NEVER,
-            groups={
-                "reasoning": DatasetGroupSpec(
-                    weight=1,
-                    datasets=[
-                        DatasetSpec(
-                            name=category,
-                            weight=dolci_counts[category],
-                        )
-                        for category in sorted(dolci_counts)
-                    ],
-                ),
-            },
-        ),
+        size=2_250,
+        seed=42,
     )
 
     # 2. Define the mixture recipe. Weights count samples, not tokens.
